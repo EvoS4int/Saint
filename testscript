@@ -70,6 +70,8 @@ local COLORS = {
 
 local selectedTarget = nil
 local teleporting = false
+local teleportModeEnabled = false
+local lastReturnPivot = nil
 local activeTween = nil
 local activeDriver = nil
 local activeSavedState = nil
@@ -629,7 +631,7 @@ backFollowTitle.Font = Enum.Font.GothamBold
 local backFollowDescription = makeLabel(
     backFollowPanel,
     "BackFollowDescription",
-    "STAY JUST UNDER THE MOB",
+    "STAY 5 STUDS UNDER THE MOB",
     UDim2.fromOffset(230, 17),
     UDim2.fromOffset(10, 26),
     8,
@@ -689,10 +691,19 @@ local teleportButton = makeButton(
     right,
     "TeleportButton",
     "TELEPORT TO MODEL",
-    UDim2.new(1, 0, 0, 38),
+    UDim2.fromOffset(165, 38),
     UDim2.fromOffset(0, 437)
 )
 teleportButton.Active = false
+
+local returnButton = makeButton(
+    right,
+    "ReturnToMeButton",
+    "RETURN TO ME",
+    UDim2.fromOffset(165, 38),
+    UDim2.fromOffset(171, 437)
+)
+returnButton.Active = false
 
 local feedbackLabel = makeLabel(
     right,
@@ -1499,7 +1510,7 @@ end
 local function updateBackFollowToggle()
     backFollowButton.Text = backFollowEnabled and "ON" or "OFF"
     backFollowDescription.Text = backFollowEnabled
-        and "STAY JUST UNDER THE MOB"
+        and "STAY 5 STUDS UNDER THE MOB"
         or "UNDER FOLLOW DISABLED"
 end
 
@@ -1721,6 +1732,7 @@ local function startMobMount(model, savedState)
 
         if not isCachedModelUsable(state.Model, "Mobs") then
             local lostName = state.Name
+            teleportModeEnabled = false
             stopMount()
 
             if selectedTarget and selectedTarget.Folder == "Mobs"
@@ -1876,8 +1888,8 @@ updateSelectedStatus = function()
     if not selectedTarget then
         selectedLabel.Text = "NONE"
         modelStatus.Text = "STATUS: NOT SELECTED"
-        teleportButton.Active = false
-        teleportButton.Text = "TELEPORT TO MODEL"
+        teleportButton.Active = teleportModeEnabled
+        teleportButton.Text = teleportModeEnabled and "TELEPORT: ON" or "TELEPORT TO MODEL"
         return
     end
 
@@ -1899,15 +1911,8 @@ updateSelectedStatus = function()
         else
             modelStatus.Text = "NO LIVING TARGET FOUND"
         end
-        teleportButton.Active = false
-        teleportButton.Text = "NO AVAILABLE TARGET"
-        return
-    end
-
-    if mountState and mountState.Model == model then
-        modelStatus.Text = "LYING FACE-UP UNDER THE MOB"
-        teleportButton.Active = false
-        teleportButton.Text = "MOUNTED"
+        teleportButton.Active = teleportModeEnabled
+        teleportButton.Text = teleportModeEnabled and "TELEPORT: ON" or "NO AVAILABLE TARGET"
         return
     end
 
@@ -1915,6 +1920,24 @@ updateSelectedStatus = function()
         modelStatus.Text = "TARGET: " .. model.Name .. " / MOVING"
         teleportButton.Active = false
         teleportButton.Text = "MOVING..."
+        return
+    end
+
+    if teleportModeEnabled then
+        if mountState and mountState.Model == model then
+            modelStatus.Text = "FOLLOWING SELECTED MOB / CLICK TO STOP"
+        else
+            modelStatus.Text = "TELEPORT MODE ACTIVE / CLICK TO STOP"
+        end
+        teleportButton.Active = true
+        teleportButton.Text = "TELEPORT: ON"
+        return
+    end
+
+    if mountState and mountState.Model == model then
+        modelStatus.Text = "LYING FACE-UP UNDER THE MOB"
+        teleportButton.Active = false
+        teleportButton.Text = "MOUNTED"
         return
     end
 
@@ -1997,10 +2020,15 @@ local function createDropdownRow(group, index)
             return
         end
 
-        if mountState and (
-            group.Folder ~= "Mobs" or group.Name ~= mountState.Name
-        ) then
-            stopMount()
+        local sameGroup = selectedTarget
+            and selectedTarget.Folder == group.Folder
+            and selectedTarget.Name == group.Name
+
+        if not sameGroup then
+            teleportModeEnabled = false
+            if mountState then
+                stopMount()
+            end
         end
 
         selectedTarget = {
@@ -2138,6 +2166,10 @@ local function smoothTeleport(target)
         startingPosition = destination
     end
 
+    lastReturnPivot = character:GetPivot()
+    returnButton.Active = true
+    teleportModeEnabled = true
+
     local distance = (startingPosition.Position - root.Position).Magnitude
     local travelDuration = math.clamp(
         distance / SETTINGS.TeleportSpeed,
@@ -2242,6 +2274,10 @@ local function smoothTeleport(target)
 
     teleporting = false
 
+    if not success then
+        teleportModeEnabled = false
+    end
+
     local shouldMount = success
         and isMob
         and backFollowEnabled
@@ -2277,11 +2313,65 @@ end
 ------------------------------------------------------------------------
 
 teleportButton.Activated:Connect(function()
+    if teleporting then
+        feedbackLabel.Text = "WAIT UNTIL TELEPORT FINISHES"
+        return
+    end
+
+    if teleportModeEnabled then
+        teleportModeEnabled = false
+        if mountState then
+            stopMount()
+        end
+        feedbackLabel.Text = "TELEPORT MODE DISABLED"
+        updateSelectedStatus()
+        return
+    end
+
     if not selectedTarget then
         feedbackLabel.Text = "SELECT A MODEL FIRST"
         return
     end
+
     smoothTeleport(selectedTarget)
+end)
+
+returnButton.Activated:Connect(function()
+    if teleporting then
+        feedbackLabel.Text = "WAIT UNTIL TELEPORT FINISHES"
+        return
+    end
+
+    if not lastReturnPivot then
+        feedbackLabel.Text = "NO RETURN POSITION SAVED"
+        return
+    end
+
+    local character = player.Character
+    if not character or not character.Parent then
+        feedbackLabel.Text = "CHARACTER NOT LOADED"
+        return
+    end
+
+    teleportModeEnabled = false
+    if mountState then
+        stopMount()
+    end
+
+    character:PivotTo(lastReturnPivot)
+    zeroCharacterVelocity(character)
+
+    local humanoid = character:FindFirstChildOfClass("Humanoid")
+    if humanoid and humanoid.Health > 0 then
+        humanoid.PlatformStand = false
+        humanoid.AutoRotate = true
+        humanoid:ChangeState(Enum.HumanoidStateType.GettingUp)
+    end
+
+    lastReturnPivot = nil
+    returnButton.Active = false
+    feedbackLabel.Text = "RETURNED TO YOUR ORIGINAL POSITION"
+    updateSelectedStatus()
 end)
 
 searchButton.Activated:Connect(function()
@@ -2348,6 +2438,7 @@ backFollowButton.Activated:Connect(function()
     updateBackFollowToggle()
 
     if not backFollowEnabled and mountState then
+        teleportModeEnabled = false
         stopMount()
         feedbackLabel.Text = "DISMOUNTED"
     else
@@ -2374,6 +2465,8 @@ local function cleanup()
 
     autoClickEnabled = false
     SETTINGS.AutoClickEnabled = false
+    teleportModeEnabled = false
+    lastReturnPivot = nil
     deactivateEquippedTool()
 
     if activeTween then
@@ -2409,6 +2502,9 @@ end)
 gui.Destroying:Connect(cleanup)
 
 connectGlobal(player.CharacterAdded, function()
+    teleportModeEnabled = false
+    lastReturnPivot = nil
+    returnButton.Active = false
     if mountState then
         stopMount()
     end
