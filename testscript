@@ -8,8 +8,8 @@ local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
 local SETTINGS = {
-    GUIWidth = 700,
-    GUIHeight = 900,
+    GUIWidth = 660,
+    GUIHeight = 640,
 
     TeleportSpeed = 14,
     MinTravelSpeed = 1,
@@ -59,6 +59,7 @@ local SETTINGS = {
     MobSearchInterval = 0.4,      -- retry the selected mob group while teleport mode is ON
     AutoFarmRadius = 150,         -- only choose mobs within this many studs
     AutoFarmSearchInterval = 0.6, -- retry nearby mob discovery at this interval
+    AutoFarmMethod = "NEAREST",  -- NEAREST, LOWEST_HP, HIGHEST_HP, FARTHEST, RANDOM, CYCLE, SELECTED_NAME
 
     -- Search everything inside every Workspace folder
     IncludeLooseParts = true,   -- also list single Parts (ores, chests, etc.) that are not inside a Model
@@ -94,6 +95,8 @@ local cameraNoclipEnabled = SETTINGS.CameraNoclipEnabled
 local originalCameraOcclusionMode = player.DevCameraOcclusionMode
 local autoFarmEnabled = false
 local farmCurrentTarget = nil
+local farmCycleLastModel = nil
+local farmCycleIndex = 0
 
 local espHighlights = {}
 local dropdownRows = {}
@@ -110,6 +113,8 @@ local lastSignature = nil
 local scanBusy = false
 
 local updateSelectedStatus
+local updateAutoFarmMethodUI
+local updateAutoFarmToggle
 local stopMount
 
 local GUI_NAME = "Pilgrammedscript"
@@ -259,6 +264,16 @@ local subtitle = makeLabel(
     true
 )
 
+local minimizeButton = makeButton(
+    header,
+    "MinimizeButton",
+    "—",
+    UDim2.fromOffset(34, 27),
+    UDim2.new(1, -146, 0.5, -13)
+)
+minimizeButton.ZIndex = 8
+minimizeButton.TextSize = 16
+
 local destroyButton = makeButton(
     header,
     "DestroyButton",
@@ -270,7 +285,7 @@ destroyButton.ZIndex = 8
 
 local dragHandle = create("TextButton", {
     Name = "DragHandle",
-    Size = UDim2.new(1, -110, 1, 0),
+    Size = UDim2.new(1, -190, 1, 0),
     Position = UDim2.fromOffset(0, 0),
     BackgroundTransparency = 1,
     BorderSizePixel = 0,
@@ -323,8 +338,8 @@ end)
 
 local left = create("Frame", {
     Name = "LeftPanel",
-    Size = UDim2.fromOffset(320, 380),
-    Position = UDim2.fromOffset(14, 54),
+    Size = UDim2.fromOffset(298, 380),
+    Position = UDim2.fromOffset(12, 54),
     BackgroundTransparency = 1,
 }, main)
 
@@ -340,7 +355,7 @@ makeLabel(
 
 local searchBox = create("TextBox", {
     Name = "SearchBox",
-    Size = UDim2.fromOffset(230, 32),
+    Size = UDim2.fromOffset(204, 32),
     Position = UDim2.fromOffset(0, 22),
     BackgroundColor3 = COLORS.Element,
     BorderSizePixel = 0,
@@ -364,7 +379,7 @@ local searchButton = makeButton(
     "SearchButton",
     "SEARCH",
     UDim2.fromOffset(82, 32),
-    UDim2.fromOffset(238, 22)
+    UDim2.fromOffset(212, 22)
 )
 
 local countLabel = makeLabel(
@@ -464,12 +479,69 @@ local modelStatus = makeLabel(
     true
 )
 
-local right = create("Frame", {
+local right = create("ScrollingFrame", {
     Name = "RightPanel",
-    Size = UDim2.fromOffset(336, 850),
-    Position = UDim2.fromOffset(350, 54),
+    Size = UDim2.fromOffset(322, 572),
+    Position = UDim2.fromOffset(324, 54),
     BackgroundTransparency = 1,
+    BorderSizePixel = 0,
+    ScrollBarThickness = 4,
+    ScrollBarImageColor3 = COLORS.White,
+    ScrollBarImageTransparency = 0.25,
+    ScrollingDirection = Enum.ScrollingDirection.Y,
+    AutomaticCanvasSize = Enum.AutomaticSize.Y,
+    CanvasSize = UDim2.new(0, 0, 0, 0),
+    ClipsDescendants = true,
+    Active = true,
 }, main)
+
+-- Minimize collapses the window to its header without stopping any background
+-- tasks (autofarm, mob tracking, ESP, orbit, or auto-click continue running).
+local expandedMainSize = main.Size
+local minimizedMainSize = UDim2.new(
+    expandedMainSize.X.Scale,
+    expandedMainSize.X.Offset,
+    0,
+    44
+)
+local isMinimized = false
+local minimizeTween = nil
+
+local function setMinimized(minimized)
+    minimized = minimized == true
+    if isMinimized == minimized then
+        return
+    end
+
+    isMinimized = minimized
+
+    if minimizeTween then
+        minimizeTween:Cancel()
+        minimizeTween = nil
+    end
+
+    if isMinimized then
+        left.Visible = false
+        right.Visible = false
+        minimizeButton.Text = "+"
+    else
+        left.Visible = true
+        right.Visible = true
+        minimizeButton.Text = "—"
+    end
+
+    local targetSize = isMinimized and minimizedMainSize or expandedMainSize
+    minimizeTween = TweenService:Create(
+        main,
+        TweenInfo.new(0.18, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+        {Size = targetSize}
+    )
+    minimizeTween:Play()
+end
+
+minimizeButton.Activated:Connect(function()
+    setMinimized(not isMinimized)
+end)
 
 makeLabel(
     right,
@@ -711,11 +783,47 @@ local autoFarmButton = makeButton(
 
 autoFarmButton.ZIndex = 10
 
+local autoFarmMethodPanel = makePanel(
+    right,
+    "AutoFarmMethodPanel",
+    UDim2.new(1, 0, 0, 49),
+    UDim2.fromOffset(0, 346)
+)
+
+local autoFarmMethodTitle = makeLabel(
+    autoFarmMethodPanel,
+    "AutoFarmMethodTitle",
+    "AUTOFARM METHOD",
+    UDim2.fromOffset(180, 20),
+    UDim2.fromOffset(10, 4),
+    10
+)
+autoFarmMethodTitle.Font = Enum.Font.GothamBold
+
+local autoFarmMethodDescription = makeLabel(
+    autoFarmMethodPanel,
+    "AutoFarmMethodDescription",
+    "CLICK TO CHANGE TARGET PRIORITY",
+    UDim2.fromOffset(205, 17),
+    UDim2.fromOffset(10, 26),
+    8,
+    true
+)
+
+local autoFarmMethodButton = makeButton(
+    autoFarmMethodPanel,
+    "AutoFarmMethodButton",
+    "NEAREST",
+    UDim2.fromOffset(105, 29),
+    UDim2.new(1, -117, 0.5, -14)
+)
+autoFarmMethodButton.ZIndex = 10
+
 local mobDistancePanel = makePanel(
     right,
     "MobDistancePanel",
     UDim2.new(1, 0, 0, 49),
-    UDim2.fromOffset(0, 346)
+    UDim2.fromOffset(0, 400)
 )
 
 local mobDistanceTitle = makeLabel(
@@ -767,7 +875,7 @@ local farmPositionPanel = makePanel(
     right,
     "FarmPositionPanel",
     UDim2.new(1, 0, 0, 49),
-    UDim2.fromOffset(0, 400)
+    UDim2.fromOffset(0, 454)
 )
 
 local farmPositionTitle = makeLabel(
@@ -802,7 +910,7 @@ local orbitPanel = makePanel(
     right,
     "OrbitPanel",
     UDim2.new(1, 0, 0, 49),
-    UDim2.fromOffset(0, 454)
+    UDim2.fromOffset(0, 508)
 )
 
 local orbitTitle = makeLabel(
@@ -837,7 +945,7 @@ local orbitSpeedPanel = makePanel(
     right,
     "OrbitSpeedPanel",
     UDim2.new(1, 0, 0, 49),
-    UDim2.fromOffset(0, 508)
+    UDim2.fromOffset(0, 562)
 )
 
 local orbitSpeedTitle = makeLabel(
@@ -889,7 +997,7 @@ local cameraNoclipPanel = makePanel(
     right,
     "CameraNoclipPanel",
     UDim2.new(1, 0, 0, 49),
-    UDim2.fromOffset(0, 562)
+    UDim2.fromOffset(0, 616)
 )
 
 local cameraNoclipTitle = makeLabel(
@@ -925,7 +1033,7 @@ local workspaceTitle = makeLabel(
     "WorkspaceTitle",
     "WORKSPACE CONTENTS / ALL MODELS",
     UDim2.new(1, 0, 0, 17),
-    UDim2.fromOffset(0, 616),
+    UDim2.fromOffset(0, 670),
     10,
     true
 )
@@ -936,7 +1044,7 @@ local folderPanel = makePanel(
     right,
     "FolderPanel",
     UDim2.new(1, 0, 0, 116),
-    UDim2.fromOffset(0, 637)
+    UDim2.fromOffset(0, 691)
 )
 
 local function createFolderStatus(name, x, y, width)
@@ -952,21 +1060,21 @@ end
 
 local folderStatuses = {
     Mobs = createFolderStatus("Mobs", 10, 4, 145),
-    NPCs = createFolderStatus("NPCs", 180, 4, 145),
+    NPCs = createFolderStatus("NPCs", 166, 4, 145),
     Ores = createFolderStatus("Ores", 10, 31, 145),
-    Map = createFolderStatus("Map", 180, 31, 145),
+    Map = createFolderStatus("Map", 166, 31, 145),
     Mirrors = createFolderStatus("Mirrors", 10, 58, 145),
-    GoldChests = createFolderStatus("GoldChests", 180, 58, 145),
+    GoldChests = createFolderStatus("GoldChests", 166, 58, 145),
     Chests = createFolderStatus("Chests", 10, 85, 145),
-    ChestSpawns = createFolderStatus("ChestSpawns", 180, 85, 145),
+    ChestSpawns = createFolderStatus("ChestSpawns", 166, 85, 145),
 }
 
 local teleportButton = makeButton(
     right,
     "TeleportButton",
     "TELEPORT TO MODEL",
-    UDim2.fromOffset(165, 38),
-    UDim2.fromOffset(0, 761)
+    UDim2.fromOffset(156, 38),
+    UDim2.fromOffset(0, 815)
 )
 teleportButton.Active = false
 
@@ -974,8 +1082,8 @@ local returnButton = makeButton(
     right,
     "ReturnToMeButton",
     "RETURN TO ME",
-    UDim2.fromOffset(165, 38),
-    UDim2.fromOffset(171, 761)
+    UDim2.fromOffset(156, 38),
+    UDim2.fromOffset(162, 815)
 )
 returnButton.Active = false
 
@@ -984,7 +1092,7 @@ local feedbackLabel = makeLabel(
     "Feedback",
     "Select a model group to begin.",
     UDim2.new(1, 0, 0, 22),
-    UDim2.fromOffset(0, 803),
+    UDim2.fromOffset(0, 857),
     9,
     true
 )
@@ -1239,6 +1347,10 @@ local function scanRoot(root, rootCategory)
         local childCategory = category
         if isNPCModel(model) then
             childCategory = "NPCs"
+        elseif getHumanoid(model) then
+            -- Treat humanoid models outside a specifically named Mobs folder
+            -- as farmable mobs too, so autofarm covers the entire Workspace.
+            childCategory = "Mobs"
         end
 
         table.insert(out, {
@@ -1516,27 +1628,125 @@ local function findNearestLiveModel(folderName, modelName)
     return closestModel
 end
 
-local function findNearestLiveMob(maxDistance)
+local AUTO_FARM_METHODS = {
+    {Id = "NEAREST", Label = "NEAREST"},
+    {Id = "LOWEST_HP", Label = "LOWEST HP"},
+    {Id = "HIGHEST_HP", Label = "HIGHEST HP"},
+    {Id = "FARTHEST", Label = "FARTHEST"},
+    {Id = "RANDOM", Label = "RANDOM"},
+    {Id = "CYCLE", Label = "CYCLE"},
+    {Id = "SELECTED_NAME", Label = "SELECTED"},
+}
+
+local function getAutoFarmCandidates(maxDistance)
     local character = player.Character
     local root = character and character:FindFirstChild("HumanoidRootPart")
     local origin = root and root.Position
         or (character and character:GetPivot().Position)
         or Vector3.zero
+    local radius = maxDistance or SETTINGS.AutoFarmRadius
+    local candidates = {}
 
-    local closestModel = nil
-    local closestDistance = maxDistance or SETTINGS.AutoFarmRadius
+    local selectedName = nil
+    if SETTINGS.AutoFarmMethod == "SELECTED_NAME" then
+        if selectedTarget and selectedTarget.Folder == "Mobs" then
+            selectedName = selectedTarget.Name
+        else
+            return candidates
+        end
+    end
 
     for _, model in ipairs(modelCache.ModelsByFolder.Mobs or {}) do
-        if isCachedModelUsable(model, "Mobs") then
-            local distance = (getModelPosition(model) - origin).Magnitude
-            if distance <= closestDistance then
-                closestDistance = distance
-                closestModel = model
+        if isCachedModelUsable(model, "Mobs")
+            and (not selectedName or model.Name == selectedName) then
+            local position = getModelPosition(model)
+            local distance = (position - origin).Magnitude
+            if distance <= radius then
+                local humanoid = getCachedHumanoid(model)
+                local healthRatio = 1
+                if humanoid and humanoid.MaxHealth > 0 then
+                    healthRatio = math.clamp(humanoid.Health / humanoid.MaxHealth, 0, 1)
+                end
+
+                table.insert(candidates, {
+                    Model = model,
+                    Distance = distance,
+                    HealthRatio = healthRatio,
+                    Health = humanoid and humanoid.Health or math.huge,
+                })
             end
         end
     end
 
-    return closestModel
+    return candidates
+end
+
+local function findAutoFarmTarget(maxDistance)
+    local candidates = getAutoFarmCandidates(maxDistance)
+    if #candidates == 0 then
+        return nil
+    end
+
+    local method = SETTINGS.AutoFarmMethod
+    local chosen = nil
+
+    if method == "RANDOM" then
+        chosen = candidates[math.random(1, #candidates)]
+    elseif method == "LOWEST_HP" then
+        table.sort(candidates, function(a, b)
+            if a.HealthRatio == b.HealthRatio then
+                return a.Distance < b.Distance
+            end
+            return a.HealthRatio < b.HealthRatio
+        end)
+        chosen = candidates[1]
+    elseif method == "HIGHEST_HP" then
+        table.sort(candidates, function(a, b)
+            if a.HealthRatio == b.HealthRatio then
+                return a.Distance < b.Distance
+            end
+            return a.HealthRatio > b.HealthRatio
+        end)
+        chosen = candidates[1]
+    elseif method == "FARTHEST" then
+        table.sort(candidates, function(a, b)
+            return a.Distance > b.Distance
+        end)
+        chosen = candidates[1]
+    elseif method == "CYCLE" then
+        table.sort(candidates, function(a, b)
+            local aName = a.Model:GetFullName()
+            local bName = b.Model:GetFullName()
+            if aName == bName then
+                return a.Distance < b.Distance
+            end
+            return aName < bName
+        end)
+
+        farmCycleIndex = (farmCycleIndex % #candidates) + 1
+        chosen = candidates[farmCycleIndex]
+    else
+        -- NEAREST and SELECTED_NAME both pick the closest eligible model.
+        table.sort(candidates, function(a, b)
+            return a.Distance < b.Distance
+        end)
+        chosen = candidates[1]
+    end
+
+    if chosen then
+        farmCycleLastModel = chosen.Model
+        return chosen.Model
+    end
+
+    return nil
+end
+
+local function findNearestLiveMob(maxDistance)
+    local previousMethod = SETTINGS.AutoFarmMethod
+    SETTINGS.AutoFarmMethod = "NEAREST"
+    local model = findAutoFarmTarget(maxDistance)
+    SETTINGS.AutoFarmMethod = previousMethod
+    return model
 end
 
 local function resolveSelectedModel(target)
@@ -2313,7 +2523,7 @@ local function startMobMount(model, savedState, autoFarmMode)
             if state.AutoFarm and autoFarmEnabled then
                 if os.clock() >= state.NextSearchAt then
                     state.NextSearchAt = os.clock() + SETTINGS.MobSearchInterval
-                    local replacement = findNearestLiveMob(SETTINGS.AutoFarmRadius)
+                    local replacement = findAutoFarmTarget(SETTINGS.AutoFarmRadius)
                     if replacement then
                         state.Model = replacement
                         state.Name = replacement.Name
@@ -2686,6 +2896,19 @@ local function createDropdownRow(group, index)
         dropdownList.Visible = false
         feedbackLabel.Text = "SELECTED GROUP: " .. group.Name
         updateSelectedStatus()
+        if updateAutoFarmMethodUI then
+            updateAutoFarmMethodUI()
+        end
+
+        -- When SELECTED is the active autofarm method, immediately retarget
+        -- the running farm loop to the newly chosen model name.
+        if autoFarmEnabled and SETTINGS.AutoFarmMethod == "SELECTED_NAME" then
+            farmCurrentTarget = nil
+            if mountState and mountState.AutoFarm then
+                mountState.Model = nil
+                mountState.NextSearchAt = 0
+            end
+        end
     end)
 end
 
@@ -2720,9 +2943,9 @@ local function searchModels()
     local shown = math.min(#matches, SETTINGS.MaxDropdownRows)
 
     if shown < #matches then
-        countLabel.Text = "FOUND " .. #matches .. " GROUPS / SHOWING FIRST " .. shown
+        countLabel.Text = "LIVE DETECTION ON | " .. #matches .. " GROUPS / SHOWING " .. shown
     else
-        countLabel.Text = "FOUND " .. #matches .. " GROUPS"
+        countLabel.Text = "LIVE DETECTION ON | FOUND " .. #matches .. " GROUPS"
     end
 
     if #matches == 0 then
@@ -2743,6 +2966,110 @@ local function searchModels()
 
     updateSelectedStatus()
 end
+
+------------------------------------------------------------------------
+-- LIVE WORKSPACE SPAWN DETECTION
+------------------------------------------------------------------------
+
+-- The periodic scan remains as a fallback, but newly-added Models, Parts, and
+-- Folders invalidate only their direct Workspace root and trigger a quick
+-- cache refresh. This catches fresh mobs and other models without repeatedly
+-- rescanning every Workspace container.
+local pendingWorkspaceRoots = {}
+local workspaceRefreshQueued = false
+local WORKSPACE_SPAWN_SCAN_DEBOUNCE = 0.18
+
+local function getDirectWorkspaceRoot(instance)
+    if not instance or instance == workspace then
+        return nil
+    end
+
+    local root = instance
+    while root and root.Parent and root.Parent ~= workspace do
+        root = root.Parent
+    end
+
+    if root and root.Parent == workspace then
+        return root
+    end
+
+    return nil
+end
+
+local function refreshAfterWorkspaceChange()
+    if destroyed or not gui.Parent then
+        return
+    end
+
+    updateWorkspaceStatus()
+    updateSelectedStatus()
+
+    if modelCache.Signature ~= lastSignature then
+        lastSignature = modelCache.Signature
+        searchModels()
+    else
+        updateDropdownCounts()
+    end
+end
+
+local function scheduleWorkspaceRefresh()
+    if workspaceRefreshQueued or destroyed then
+        return
+    end
+
+    workspaceRefreshQueued = true
+
+    task.delay(WORKSPACE_SPAWN_SCAN_DEBOUNCE, function()
+        task.spawn(function()
+            -- Do not invalidate a root while another cache build is reading it.
+            while scanBusy and gui.Parent and not destroyed do
+                task.wait(0.03)
+            end
+
+            if destroyed or not gui.Parent then
+                workspaceRefreshQueued = false
+                table.clear(pendingWorkspaceRoots)
+                return
+            end
+
+            for root in pairs(pendingWorkspaceRoots) do
+                rootEntries[root] = nil
+            end
+            table.clear(pendingWorkspaceRoots)
+
+            -- Allow new events during this scan to queue another pass.
+            workspaceRefreshQueued = false
+            refreshModelCache(false)
+            refreshAfterWorkspaceChange()
+
+            if next(pendingWorkspaceRoots) ~= nil then
+                scheduleWorkspaceRefresh()
+            end
+        end)
+    end)
+end
+
+local function queueWorkspaceRootRefresh(instance)
+    -- Highlights, attachments, scripts, and other non-target descendants do
+    -- not need a full root rescan. Models, Parts, and Folders can change the
+    -- selectable / farmable model index.
+    if not instance:IsA("Model")
+        and not instance:IsA("BasePart")
+        and not instance:IsA("Folder") then
+        return
+    end
+
+    local root = getDirectWorkspaceRoot(instance)
+    if not root then
+        return
+    end
+
+    pendingWorkspaceRoots[root] = true
+    scheduleWorkspaceRefresh()
+end
+
+connectGlobal(workspace.DescendantAdded, queueWorkspaceRootRefresh)
+connectGlobal(workspace.DescendantRemoving, queueWorkspaceRootRefresh)
 
 ------------------------------------------------------------------------
 -- TELEPORT
@@ -2965,6 +3292,52 @@ end
 -- BUTTON HANDLERS
 ------------------------------------------------------------------------
 
+local function getAutoFarmMethodLabel()
+    for _, method in ipairs(AUTO_FARM_METHODS) do
+        if method.Id == SETTINGS.AutoFarmMethod then
+            return method.Label
+        end
+    end
+    return "NEAREST"
+end
+
+updateAutoFarmMethodUI = function()
+    autoFarmMethodButton.Text = getAutoFarmMethodLabel()
+    if SETTINGS.AutoFarmMethod == "SELECTED_NAME" then
+        autoFarmMethodDescription.Text = selectedTarget and selectedTarget.Folder == "Mobs"
+            and ("ONLY: " .. string.upper(selectedTarget.Name))
+            or "SELECT A MOB MODEL FIRST"
+    else
+        autoFarmMethodDescription.Text = "CLICK TO CHANGE TARGET PRIORITY"
+    end
+end
+
+autoFarmMethodButton.Activated:Connect(function()
+    local currentIndex = 1
+    for index, method in ipairs(AUTO_FARM_METHODS) do
+        if method.Id == SETTINGS.AutoFarmMethod then
+            currentIndex = index
+            break
+        end
+    end
+
+    local nextIndex = (currentIndex % #AUTO_FARM_METHODS) + 1
+    SETTINGS.AutoFarmMethod = AUTO_FARM_METHODS[nextIndex].Id
+    farmCycleLastModel = nil
+    farmCycleIndex = 0
+    updateAutoFarmMethodUI()
+    updateAutoFarmToggle()
+
+    if autoFarmEnabled then
+        farmCurrentTarget = nil
+        if mountState and mountState.AutoFarm then
+            mountState.Model = nil
+            mountState.NextSearchAt = 0
+        end
+        feedbackLabel.Text = "AUTOFARM METHOD: " .. getAutoFarmMethodLabel()
+    end
+end)
+
 local function startAutoFarmSearch()
     autoFarmToken = autoFarmToken + 1
     local myToken = autoFarmToken
@@ -2976,7 +3349,7 @@ local function startAutoFarmSearch()
             and autoFarmEnabled do
 
             if not teleporting and not mountState then
-                local model = findNearestLiveMob(SETTINGS.AutoFarmRadius)
+                local model = findAutoFarmTarget(SETTINGS.AutoFarmRadius)
                 if model then
                     farmCurrentTarget = model
                     local target = {
@@ -2998,11 +3371,11 @@ local function startAutoFarmSearch()
     end)
 end
 
-local function updateAutoFarmToggle()
+updateAutoFarmToggle = function()
     autoFarmButton.Text = autoFarmEnabled and "ON" or "OFF"
     autoFarmDescription.Text = autoFarmEnabled
-        and ("ALL MOB NAMES / " .. tostring(SETTINGS.AutoFarmRadius) .. " STUD RADIUS")
-        or "READY / ALL MOB NAMES"
+        and (getAutoFarmMethodLabel() .. " / " .. tostring(SETTINGS.AutoFarmRadius) .. " STUD RADIUS")
+        or (getAutoFarmMethodLabel() .. " / ALL MOB NAMES")
 end
 
 local function setAutoFarmEnabled(enabled)
@@ -3386,11 +3759,12 @@ updateFarmPositionMode()
 mobDistanceDescription.Text = "GAP: " .. tostring(SETTINGS.MobUnderDistance) .. " STUDS"
 updateOrbitToggle()
 updateCameraNoclipToggle()
+updateAutoFarmMethodUI()
 updateAutoFarmToggle()
 updateWorkspaceStatus()
 updateSelectedStatus()
 
--- Model scan loop: fast mob/NPC roots every CacheRefreshRate; all other Workspace roots on FullScanRate
+-- Event-driven Workspace spawn detection handles new Models/Parts quickly; this loop is the periodic reconciliation fallback.
 task.spawn(function()
     local lastFullScan = -math.huge
 
