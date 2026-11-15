@@ -1,4 +1,3 @@
-
 local Players = game:GetService("Players")
 local TweenService = game:GetService("TweenService")
 local UserInputService = game:GetService("UserInputService")
@@ -18,12 +17,9 @@ local SETTINGS = {
     MaxDuration = 60,
 
     MobTeleportEnabled = true,
-    MobBelowDistance = 5,
     AutoNextMob = true,
-
+    MobHeadClearance = 5,
     MobBackFollowEnabled = true,
-    MobBackClearance = 0.3,
-    MobBackOffset = 0.25,
 
     ESPEnabled = true,
     ESPRadius = 150,
@@ -47,8 +43,10 @@ local SETTINGS = {
 
     AutoClickEnabled = true,
     AutoClickInterval = 0.2,
+    AutoClickPulseDuration = 0.05,
 
     CacheRefreshRate = 1.5,
+    MountUpdateRate = 1 / 60,
 }
 
 local COLORS = {
@@ -58,7 +56,6 @@ local COLORS = {
     Element = Color3.fromRGB(18, 18, 18),
     White = Color3.fromRGB(255, 255, 255),
     Gray = Color3.fromRGB(175, 175, 175),
-    DarkGray = Color3.fromRGB(35, 35, 35),
 }
 
 local selectedTarget = nil
@@ -74,34 +71,33 @@ local backFollowEnabled = SETTINGS.MobBackFollowEnabled
 
 local espHighlights = {}
 local dropdownRows = {}
+local globalConnections = {}
 
 local mountState = nil
 local mountConnection = nil
-
 local destroyed = false
 
-local LAY_ROTATION = CFrame.Angles(
-    math.rad(90),
-    0,
-    0
-)
+local updateSelectedStatus
+local stopMount
 
 local oldGui = playerGui:FindFirstChild("MobsSearchGui")
-
 if oldGui then
     oldGui:Destroy()
 end
 
 local function create(className, properties, parent)
     local object = Instance.new(className)
-
     for property, value in pairs(properties) do
         object[property] = value
     end
-
     object.Parent = parent
-
     return object
+end
+
+local function connectGlobal(signal, callback)
+    local connection = signal:Connect(callback)
+    table.insert(globalConnections, connection)
+    return connection
 end
 
 local function addCorner(parent, radius)
@@ -119,15 +115,7 @@ local function addStroke(parent, transparency, thickness)
     }, parent)
 end
 
-local function makeLabel(
-    parent,
-    name,
-    text,
-    size,
-    position,
-    textSize,
-    muted
-)
+local function makeLabel(parent, name, text, size, position, textSize, muted)
     return create("TextLabel", {
         Name = name,
         Size = size,
@@ -155,11 +143,11 @@ local function makeButton(parent, name, text, size, position)
         TextSize = 10,
         Font = Enum.Font.GothamBold,
         AutoButtonColor = true,
+        Active = true,
+        Selectable = true,
     }, parent)
-
     addCorner(button, 6)
     addStroke(button, 0.35, 1)
-
     return button
 end
 
@@ -171,10 +159,8 @@ local function makePanel(parent, name, size, position)
         BackgroundColor3 = COLORS.Panel,
         BorderSizePixel = 0,
     }, parent)
-
     addCorner(panel, 7)
     addStroke(panel, 0.45, 1)
-
     return panel
 end
 
@@ -187,10 +173,7 @@ local gui = create("ScreenGui", {
 
 local main = create("Frame", {
     Name = "Main",
-    Size = UDim2.fromOffset(
-        SETTINGS.GUIWidth,
-        SETTINGS.GUIHeight
-    ),
+    Size = UDim2.fromOffset(SETTINGS.GUIWidth, SETTINGS.GUIHeight),
     Position = UDim2.fromScale(0.5, 0.5),
     AnchorPoint = Vector2.new(0.5, 0.5),
     BackgroundColor3 = COLORS.Background,
@@ -220,13 +203,12 @@ local title = makeLabel(
     UDim2.fromOffset(15, 0),
     14
 )
-
 title.Font = Enum.Font.GothamBold
 
 local subtitle = makeLabel(
     header,
     "Subtitle",
-    "BACK FOLLOW / ESP",
+    "HEAD FOLLOW / ESP",
     UDim2.fromOffset(170, 44),
     UDim2.fromOffset(180, 0),
     9,
@@ -240,6 +222,7 @@ local destroyButton = makeButton(
     UDim2.fromOffset(90, 27),
     UDim2.new(1, -104, 0.5, -13)
 )
+destroyButton.ZIndex = 8
 
 local dragHandle = create("TextButton", {
     Name = "DragHandle",
@@ -253,40 +236,31 @@ local dragHandle = create("TextButton", {
     ZIndex = 5,
 }, header)
 
-destroyButton.ZIndex = 8
-
 local dragging = false
 local dragInput = nil
 local dragStart = nil
 local startPosition = nil
 
-dragHandle.InputBegan:Connect(function(input)
+connectGlobal(dragHandle.InputBegan, function(input)
     if input.UserInputType == Enum.UserInputType.MouseButton1
         or input.UserInputType == Enum.UserInputType.Touch then
-
         dragging = true
         dragStart = input.Position
         startPosition = main.Position
-
         if input.UserInputType == Enum.UserInputType.Touch then
             dragInput = input
         end
     end
 end)
 
-UserInputService.InputChanged:Connect(function(input)
+connectGlobal(UserInputService.InputChanged, function(input)
     if not dragging then
         return
     end
-
-    local mouseMovement =
-        input.UserInputType == Enum.UserInputType.MouseMovement
-
+    local mouseMovement = input.UserInputType == Enum.UserInputType.MouseMovement
     local touchMovement = input == dragInput
-
     if mouseMovement or touchMovement then
         local delta = input.Position - dragStart
-
         main.Position = UDim2.new(
             startPosition.X.Scale,
             startPosition.X.Offset + delta.X,
@@ -296,10 +270,8 @@ UserInputService.InputChanged:Connect(function(input)
     end
 end)
 
-UserInputService.InputEnded:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.MouseButton1
-        or input == dragInput then
-
+connectGlobal(UserInputService.InputEnded, function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input == dragInput then
         dragging = false
         dragInput = nil
     end
@@ -337,10 +309,8 @@ local searchBox = create("TextBox", {
     ClearTextOnFocus = false,
     TextXAlignment = Enum.TextXAlignment.Left,
 }, left)
-
 addCorner(searchBox, 6)
 addStroke(searchBox, 0.35, 1)
-
 create("UIPadding", {
     PaddingLeft = UDim.new(0, 10),
 }, searchBox)
@@ -380,9 +350,7 @@ local dropdownButton = makeButton(
     UDim2.new(1, 0, 0, 31),
     UDim2.fromOffset(0, 98)
 )
-
 dropdownButton.TextXAlignment = Enum.TextXAlignment.Left
-
 create("UIPadding", {
     PaddingLeft = UDim.new(0, 10),
 }, dropdownButton)
@@ -400,7 +368,6 @@ local dropdownList = create("ScrollingFrame", {
     Visible = false,
     ZIndex = 20,
 }, left)
-
 addCorner(dropdownList, 7)
 addStroke(dropdownList, 0.25, 1)
 
@@ -441,7 +408,6 @@ local selectedLabel = makeLabel(
     UDim2.fromOffset(9, 21),
     11
 )
-
 selectedLabel.Font = Enum.Font.GothamBold
 
 local modelStatus = makeLabel(
@@ -486,7 +452,6 @@ local toggleLabel = makeLabel(
     UDim2.fromOffset(10, 4),
     10
 )
-
 toggleLabel.Font = Enum.Font.GothamBold
 
 local toggleDescription = makeLabel(
@@ -522,7 +487,6 @@ local espLabel = makeLabel(
     UDim2.fromOffset(10, 4),
     10
 )
-
 espLabel.Font = Enum.Font.GothamBold
 
 local espDescription = makeLabel(
@@ -558,7 +522,6 @@ local speedTitle = makeLabel(
     UDim2.fromOffset(10, 4),
     10
 )
-
 speedTitle.Font = Enum.Font.GothamBold
 
 makeLabel(
@@ -585,7 +548,6 @@ local speedBox = create("TextBox", {
     Font = Enum.Font.GothamBold,
     ClearTextOnFocus = false,
 }, speedPanel)
-
 addCorner(speedBox, 5)
 addStroke(speedBox, 0.3, 1)
 
@@ -612,7 +574,6 @@ local autoClickTitle = makeLabel(
     UDim2.fromOffset(10, 4),
     10
 )
-
 autoClickTitle.Font = Enum.Font.GothamBold
 
 local autoClickDescription = makeLabel(
@@ -632,6 +593,8 @@ local autoClickButton = makeButton(
     UDim2.fromOffset(65, 29),
     UDim2.new(1, -77, 0.5, -14)
 )
+autoClickButton.ZIndex = 20
+autoClickButton.ZIndex = 10
 
 local backFollowPanel = makePanel(
     right,
@@ -643,18 +606,17 @@ local backFollowPanel = makePanel(
 local backFollowTitle = makeLabel(
     backFollowPanel,
     "BackFollowTitle",
-    "MOB BACK FOLLOW",
+    "MOB HEAD FOLLOW",
     UDim2.fromOffset(220, 20),
     UDim2.fromOffset(10, 4),
     10
 )
-
 backFollowTitle.Font = Enum.Font.GothamBold
 
 local backFollowDescription = makeLabel(
     backFollowPanel,
     "BackFollowDescription",
-    "FOLLOW MOB POSITION AND ROTATION",
+    "STAY 5 STUDS ABOVE MOB HEAD",
     UDim2.fromOffset(230, 17),
     UDim2.fromOffset(10, 26),
     8,
@@ -709,7 +671,6 @@ local teleportButton = makeButton(
     UDim2.new(1, 0, 0, 38),
     UDim2.fromOffset(0, 407)
 )
-
 teleportButton.Active = false
 
 local feedbackLabel = makeLabel(
@@ -721,29 +682,26 @@ local feedbackLabel = makeLabel(
     9,
     true
 )
-
 feedbackLabel.TextXAlignment = Enum.TextXAlignment.Center
 
 local function getFolder(name)
     local folder = workspace:FindFirstChild(name)
-
     if folder and folder:IsA("Folder") then
         return folder
     end
-
     return nil
 end
 
 local function updateWorkspaceStatus()
-    for name, label in pairs({
+    local folders = {
         Mobs = mobsStatus,
         NPCs = npcsStatus,
         ChestSpawns = chestSpawnsStatus,
         Chests = chestsStatus,
-    }) do
-        label.Text = name .. (
-            getFolder(name) and ": AVAILABLE" or ": MISSING"
-        )
+    }
+
+    for name, label in pairs(folders) do
+        label.Text = name .. (getFolder(name) and ": AVAILABLE" or ": MISSING")
     end
 end
 
@@ -763,7 +721,6 @@ local function getHumanoid(model)
     if not model then
         return nil
     end
-
     return model:FindFirstChildWhichIsA("Humanoid", true)
 end
 
@@ -784,12 +741,10 @@ local modelCache = {
         Mobs = {},
         NPCs = {},
     },
-
     ByName = {
         Mobs = {},
         NPCs = {},
     },
-
     Parts = {},
     Humanoids = {},
     Groups = {},
@@ -802,23 +757,9 @@ local function getTopLevelModels(folder)
 
     local results = {}
 
-    for _, object in ipairs(folder:GetDescendants()) do
+    for _, object in ipairs(folder:GetChildren()) do
         if object:IsA("Model") then
-            local ancestor = object.Parent
-            local nested = false
-
-            while ancestor and ancestor ~= folder do
-                if ancestor:IsA("Model") then
-                    nested = true
-                    break
-                end
-
-                ancestor = ancestor.Parent
-            end
-
-            if not nested then
-                table.insert(results, object)
-            end
+            table.insert(results, object)
         end
     end
 
@@ -831,12 +772,10 @@ local function refreshModelCache()
             Mobs = {},
             NPCs = {},
         },
-
         ByName = {
             Mobs = {},
             NPCs = {},
         },
-
         Parts = {},
         Humanoids = {},
         Groups = {},
@@ -857,12 +796,10 @@ local function refreshModelCache()
                 newCache.Humanoids[model] = humanoid
 
                 local group = newCache.ByName[folderName][model.Name]
-
                 if not group then
                     group = {}
                     newCache.ByName[folderName][model.Name] = group
                 end
-
                 table.insert(group, model)
             end
 
@@ -878,11 +815,9 @@ local function refreshModelCache()
     table.sort(newCache.Groups, function(a, b)
         local nameA = a.Name:lower()
         local nameB = b.Name:lower()
-
         if nameA == nameB then
             return a.Folder < b.Folder
         end
-
         return nameA < nameB
     end)
 
@@ -895,13 +830,11 @@ local function isCachedModelUsable(model, folderName)
     end
 
     local folder = getFolder(folderName)
-
-    if not folder or not model:IsDescendantOf(folder) then
+    if not folder or model.Parent ~= folder then
         return false
     end
 
     local part = modelCache.Parts[model]
-
     if not part or not part:IsDescendantOf(model) then
         part = getTeleportPart(model)
         modelCache.Parts[model] = part
@@ -912,7 +845,6 @@ local function isCachedModelUsable(model, folderName)
     end
 
     local humanoid = modelCache.Humanoids[model]
-
     if not humanoid or not humanoid.Parent then
         humanoid = getHumanoid(model)
         modelCache.Humanoids[model] = humanoid
@@ -922,8 +854,7 @@ local function isCachedModelUsable(model, folderName)
 end
 
 local function getGroupModels(folderName, modelName)
-    local candidates =
-        modelCache.ByName[folderName]
+    local candidates = modelCache.ByName[folderName]
         and modelCache.ByName[folderName][modelName]
 
     if not candidates then
@@ -931,13 +862,11 @@ local function getGroupModels(folderName, modelName)
     end
 
     local results = {}
-
     for _, model in ipairs(candidates) do
         if isCachedModelUsable(model, folderName) then
             table.insert(results, model)
         end
     end
-
     return results
 end
 
@@ -947,13 +876,11 @@ end
 
 local function getModelPosition(model)
     local part = modelCache.Parts[model]
-
     if part and part.Parent then
         return part.Position
     end
 
     part = getTeleportPart(model)
-
     if part then
         modelCache.Parts[model] = part
         return part.Position
@@ -964,24 +891,19 @@ end
 
 local function findNearestLiveModel(folderName, modelName)
     local models = getGroupModels(folderName, modelName)
-
     if #models == 0 then
         return nil
     end
 
     local character = player.Character
     local root = character and character:FindFirstChild("HumanoidRootPart")
-
     local origin = root and root.Position or Vector3.zero
 
     local closestModel = nil
     local closestDistance = math.huge
 
     for _, model in ipairs(models) do
-        local distance = (
-            getModelPosition(model) - origin
-        ).Magnitude
-
+        local distance = (getModelPosition(model) - origin).Magnitude
         if distance < closestDistance then
             closestDistance = distance
             closestModel = model
@@ -997,7 +919,6 @@ local function resolveSelectedModel(target)
     end
 
     local current = target.CurrentModel
-
     if current and isCachedModelUsable(current, target.Folder) then
         return current
     end
@@ -1005,13 +926,70 @@ local function resolveSelectedModel(target)
     target.CurrentModel = nil
 
     if target.Folder == "Mobs" and SETTINGS.AutoNextMob then
-        target.CurrentModel = findNearestLiveModel(
-            "Mobs",
-            target.Name
-        )
+        target.CurrentModel = findNearestLiveModel("Mobs", target.Name)
     end
 
     return target.CurrentModel
+end
+
+local function getMobForward(model)
+    local part = model:FindFirstChild("HumanoidRootPart", true)
+        or model:FindFirstChild("UpperTorso", true)
+        or model:FindFirstChild("Torso", true)
+        or model:FindFirstChild("Head", true)
+        or model.PrimaryPart
+
+    if not part or not part:IsA("BasePart") then
+        return Vector3.new(0, 0, -1)
+    end
+
+    local forward = part.CFrame.LookVector
+    forward = Vector3.new(forward.X, 0, forward.Z)
+
+    if forward.Magnitude < 0.01 then
+        return Vector3.new(0, 0, -1)
+    end
+
+    return forward.Unit
+end
+
+local function getMobTopCFrame(model)
+    if not model or not isCachedModelUsable(model, "Mobs") then
+        return nil
+    end
+
+    local head = model:FindFirstChild("Head", true)
+    local headPosition
+
+    if head and head:IsA("BasePart") then
+        headPosition = Vector3.new(
+            head.Position.X,
+            head.Position.Y + head.Size.Y / 2 + SETTINGS.MobHeadClearance,
+            head.Position.Z
+        )
+    else
+        local success, boxCFrame, boxSize = pcall(function()
+            return model:GetBoundingBox()
+        end)
+
+        if not success then
+            return nil
+        end
+
+        headPosition = Vector3.new(
+            boxCFrame.Position.X,
+            boxCFrame.Position.Y + boxSize.Y / 2 + SETTINGS.MobHeadClearance,
+            boxCFrame.Position.Z
+        )
+    end
+
+    local mobForward = getMobForward(model)
+
+    return CFrame.lookAt(
+        headPosition,
+        headPosition + Vector3.new(0, 1, 0),
+        mobForward
+    )
 end
 
 local function clearESP()
@@ -1019,7 +997,6 @@ local function clearESP()
         if highlight then
             highlight:Destroy()
         end
-
         espHighlights[model] = nil
     end
 end
@@ -1030,7 +1007,6 @@ local function createESP(model)
     end
 
     local highlight = Instance.new("Highlight")
-
     highlight.Name = "LocalMobESP"
     highlight.Adornee = model
     highlight.FillTransparency = 1
@@ -1040,7 +1016,6 @@ local function createESP(model)
     highlight.Parent = model
 
     espHighlights[model] = highlight
-
     return highlight
 end
 
@@ -1062,10 +1037,7 @@ local function updateESP()
 
     for _, model in ipairs(modelCache.ModelsByFolder.Mobs) do
         if isCachedModelUsable(model, "Mobs") then
-            local distance = (
-                getModelPosition(model) - root.Position
-            ).Magnitude
-
+            local distance = (getModelPosition(model) - root.Position).Magnitude
             if distance <= SETTINGS.ESPRadius then
                 table.insert(candidates, {
                     Model = model,
@@ -1080,15 +1052,10 @@ local function updateESP()
     end)
 
     local wanted = {}
-
-    local amount = math.min(
-        #candidates,
-        SETTINGS.MaxESPHighlights
-    )
+    local amount = math.min(#candidates, SETTINGS.MaxESPHighlights)
 
     for index = 1, amount do
         local model = candidates[index].Model
-
         wanted[model] = true
         createESP(model)
     end
@@ -1103,7 +1070,6 @@ end
 
 local function getEquippedTool()
     local character = player.Character
-
     if not character then
         return nil
     end
@@ -1117,45 +1083,39 @@ local function getEquippedTool()
     return nil
 end
 
+local function deactivateEquippedTool()
+    local tool = getEquippedTool()
+    if tool then
+        pcall(function()
+            tool:Deactivate()
+        end)
+    end
+end
+
 local function updateAutoClickToggle()
     autoClickButton.Text = autoClickEnabled and "ON" or "OFF"
-
     autoClickDescription.Text = autoClickEnabled
         and "TOOL ACTIVATE / NO MOUSE INPUT"
         or "AUTO CLICK DISABLED"
 end
 
-autoClickButton.Activated:Connect(function()
-    autoClickEnabled = not autoClickEnabled
+local function setAutoClickEnabled(enabled)
+    autoClickEnabled = enabled == true
     SETTINGS.AutoClickEnabled = autoClickEnabled
+
+    if not autoClickEnabled then
+        deactivateEquippedTool()
+    end
 
     updateAutoClickToggle()
 
     feedbackLabel.Text = autoClickEnabled
         and "AUTO CLICK ENABLED"
         or "AUTO CLICK DISABLED"
-end)
+end
 
-task.spawn(function()
-    while gui.Parent and not destroyed do
-        if autoClickEnabled and not teleporting then
-            local character = player.Character
-            local humanoid = character
-                and character:FindFirstChildOfClass("Humanoid")
-
-            local tool = getEquippedTool()
-
-            if humanoid and humanoid.Health > 0 and tool then
-                pcall(function()
-                    if tool.Parent == character and tool.Enabled then
-                        tool:Activate()
-                    end
-                end)
-            end
-        end
-
-        task.wait(SETTINGS.AutoClickInterval)
-    end
+autoClickButton.Activated:Connect(function()
+    setAutoClickEnabled(not autoClickEnabled)
 end)
 
 local function applyTravelSpeed()
@@ -1166,33 +1126,19 @@ local function applyTravelSpeed()
     end
 
     local value = tonumber(speedBox.Text)
-
-    if not value
-        or value ~= value
-        or value == math.huge
-        or value == -math.huge then
-
+    if not value or value ~= value or value == math.huge or value == -math.huge then
         speedBox.Text = tostring(SETTINGS.TeleportSpeed)
         feedbackLabel.Text = "INVALID SPEED"
         return
     end
 
-    value = math.clamp(
-        value,
-        SETTINGS.MinTravelSpeed,
-        SETTINGS.MaxTravelSpeed
-    )
-
+    value = math.clamp(value, SETTINGS.MinTravelSpeed, SETTINGS.MaxTravelSpeed)
     SETTINGS.TeleportSpeed = value
     speedBox.Text = tostring(value)
-
-    feedbackLabel.Text = "TRAVEL SPEED: "
-        .. tostring(value)
-        .. " STUDS/SEC"
+    feedbackLabel.Text = "TRAVEL SPEED: " .. tostring(value) .. " STUDS/SEC"
 end
 
 applySpeedButton.Activated:Connect(applyTravelSpeed)
-
 speedBox.FocusLost:Connect(function(enterPressed)
     if enterPressed then
         applyTravelSpeed()
@@ -1201,7 +1147,6 @@ end)
 
 local function updateMobToggle()
     mobToggleButton.Text = mobTeleportEnabled and "ON" or "OFF"
-
     toggleDescription.Text = mobTeleportEnabled
         and "AUTO NEXT SAME-NAME MOB: ON"
         or "MOB TELEPORT DISABLED"
@@ -1209,7 +1154,6 @@ end
 
 local function updateESPToggle()
     espToggleButton.Text = espEnabled and "ON" or "OFF"
-
     espDescription.Text = espEnabled
         and "OUTLINE ONLY / OCCLUDED"
         or "MOB ESP DISABLED"
@@ -1221,10 +1165,9 @@ end
 
 local function updateBackFollowToggle()
     backFollowButton.Text = backFollowEnabled and "ON" or "OFF"
-
     backFollowDescription.Text = backFollowEnabled
-        and "FOLLOW MOB POSITION AND ROTATION"
-        or "BACK FOLLOW DISABLED"
+        and "STAY 5 STUDS ABOVE MOB HEAD"
+        or "HEAD FOLLOW DISABLED"
 end
 
 local function captureCharacterState(character, humanoid, root)
@@ -1234,16 +1177,12 @@ local function captureCharacterState(character, humanoid, root)
         Character = character,
         Humanoid = humanoid,
         Root = root,
-
         Anchored = root.Anchored,
         PlatformStand = humanoid.PlatformStand,
         AutoRotate = humanoid.AutoRotate,
-
         AnimateScript = animateScript,
         AnimateDisabled = nil,
-
         RootToPivot = root.CFrame:ToObjectSpace(character:GetPivot()),
-
         AnimationSpeeds = {},
     }
 
@@ -1280,13 +1219,32 @@ local function captureCharacterState(character, humanoid, root)
     return saved
 end
 
-local function restoreCharacterState(saved)
+local function restoreCharacterState(saved, standUp)
     if not saved then
         return
     end
 
     local root = saved.Root
     local humanoid = saved.Humanoid
+    local character = saved.Character
+
+    if standUp and character and character.Parent and root and root.Parent then
+        local forward = root.CFrame.LookVector
+        forward = Vector3.new(forward.X, 0, forward.Z)
+
+        if forward.Magnitude < 0.01 then
+            forward = Vector3.new(0, 0, -1)
+        else
+            forward = forward.Unit
+        end
+
+        local uprightRoot = CFrame.lookAt(
+            root.Position,
+            root.Position + forward
+        )
+
+        character:PivotTo(uprightRoot * saved.RootToPivot)
+    end
 
     if root and root.Parent then
         root.AssemblyLinearVelocity = Vector3.zero
@@ -1299,10 +1257,7 @@ local function restoreCharacterState(saved)
         humanoid.PlatformStand = saved.PlatformStand
 
         local animateScript = saved.AnimateScript
-
-        if animateScript and animateScript.Parent
-            and saved.AnimateDisabled ~= nil then
-
+        if animateScript and animateScript.Parent and saved.AnimateDisabled ~= nil then
             animateScript.Disabled = saved.AnimateDisabled
         end
 
@@ -1324,12 +1279,8 @@ local function restoreCharacterState(saved)
     end
 end
 
-local stopMount
-local updateSelectedStatus
-
 stopMount = function()
     local state = mountState
-
     if not state then
         return
     end
@@ -1341,49 +1292,61 @@ stopMount = function()
         mountConnection = nil
     end
 
-    restoreCharacterState(state.SavedState)
+    restoreCharacterState(state.SavedState, true)
 end
 
-local function getMobBackCFrame(model, humanoid, root)
+local function getMobTopCFrame(model)
     if not model or not isCachedModelUsable(model, "Mobs") then
         return nil
     end
 
-    local standingHeight =
-        humanoid.HipHeight
-        + root.Size.Y / 2
-        + SETTINGS.MobBackClearance
+    local head = model:FindFirstChild("Head", true)
+    local headPosition
 
-    local torso =
-        model:FindFirstChild("UpperTorso", true)
-        or model:FindFirstChild("Torso", true)
-        or model:FindFirstChild("LowerTorso", true)
-
-    if torso and torso:IsA("BasePart") then
-        local offset = CFrame.new(
-            0,
-            torso.Size.Y / 2 + standingHeight,
-            torso.Size.Z * SETTINGS.MobBackOffset
+    if head and head:IsA("BasePart") then
+        headPosition = Vector3.new(
+            head.Position.X,
+            head.Position.Y + head.Size.Y / 2 + SETTINGS.MobHeadClearance,
+            head.Position.Z
         )
+    else
+        local success, boxCFrame, boxSize = pcall(function()
+            return model:GetBoundingBox()
+        end)
 
-        return torso.CFrame * offset
+        if not success then
+            return nil
+        end
+
+        headPosition = Vector3.new(
+            boxCFrame.Position.X,
+            boxCFrame.Position.Y + boxSize.Y / 2 + SETTINGS.MobHeadClearance,
+            boxCFrame.Position.Z
+        )
     end
 
-    local success, boxCFrame, boxSize = pcall(function()
-        return model:GetBoundingBox()
-    end)
+    local facingPart = model:FindFirstChild("HumanoidRootPart", true)
+        or model:FindFirstChild("UpperTorso", true)
+        or model:FindFirstChild("Torso", true)
+        or model:FindFirstChild("Head", true)
+        or model.PrimaryPart
 
-    if not success then
-        return nil
+    local forward = Vector3.new(0, 0, -1)
+    if facingPart and facingPart:IsA("BasePart") then
+        local look = facingPart.CFrame.LookVector
+        forward = Vector3.new(look.X, 0, look.Z)
+        if forward.Magnitude < 0.01 then
+            forward = Vector3.new(0, 0, -1)
+        else
+            forward = forward.Unit
+        end
     end
 
-    local offset = CFrame.new(
-        0,
-        boxSize.Y / 2 + standingHeight,
-        boxSize.Z * SETTINGS.MobBackOffset
+    return CFrame.lookAt(
+        headPosition,
+        headPosition + Vector3.new(0, 1, 0),
+        forward
     )
-
-    return boxCFrame * offset
 end
 
 local function startMobMount(model, savedState)
@@ -1395,12 +1358,9 @@ local function startMobMount(model, savedState)
     local humanoid = savedState.Humanoid
     local root = savedState.Root
 
-    if not character.Parent
-        or not humanoid.Parent
-        or not root.Parent
+    if not character.Parent or not humanoid.Parent or not root.Parent
         or not isCachedModelUsable(model, "Mobs") then
-
-        restoreCharacterState(savedState)
+        restoreCharacterState(savedState, true)
         return false
     end
 
@@ -1416,28 +1376,21 @@ local function startMobMount(model, savedState)
 
     mountConnection = RunService.RenderStepped:Connect(function()
         local state = mountState
-
         if not state or destroyed then
             return
         end
 
-        if not state.Character.Parent
-            or not state.Root.Parent
-            or not state.Humanoid.Parent then
-
+        if not state.Character.Parent or not state.Root.Parent or not state.Humanoid.Parent then
             stopMount()
             return
         end
 
         if not isCachedModelUsable(state.Model, "Mobs") then
             local lostName = state.Name
-
             stopMount()
 
-            if selectedTarget
-                and selectedTarget.Folder == "Mobs"
+            if selectedTarget and selectedTarget.Folder == "Mobs"
                 and selectedTarget.Name == lostName then
-
                 selectedTarget.CurrentModel = nil
                 updateSelectedStatus()
             end
@@ -1446,34 +1399,148 @@ local function startMobMount(model, savedState)
             return
         end
 
-        local targetCFrame = getMobBackCFrame(
-            state.Model,
-            state.Humanoid,
-            state.Root
-        )
-
+        local targetCFrame = getMobTopCFrame(state.Model)
         if targetCFrame then
-            local desiredPivot = targetCFrame * state.RootToPivot
-            state.Character:PivotTo(desiredPivot)
+            state.Character:PivotTo(targetCFrame * state.RootToPivot)
         end
     end)
 
     return true
 end
 
-local function getFolder(name)
-    local folder = workspace:FindFirstChild(name)
+local function playCharacterTween(
+    character,
+    rootDestination,
+    rootToPivot,
+    duration,
+    style,
+    targetModel
+)
+    local driver = Instance.new("CFrameValue")
+    driver.Value = character:GetPivot()
+    activeDriver = driver
 
-    if folder and folder:IsA("Folder") then
-        return folder
+    local pivotConnection = driver:GetPropertyChangedSignal("Value"):Connect(function()
+        if character.Parent then
+            character:PivotTo(driver.Value)
+        end
+    end)
+
+    local tween = TweenService:Create(
+        driver,
+        TweenInfo.new(
+            duration,
+            style or Enum.EasingStyle.Linear,
+            Enum.EasingDirection.InOut
+        ),
+        {
+            Value = rootDestination * rootToPivot
+        }
+    )
+
+    activeTween = tween
+
+    local completed = false
+    local playbackState = nil
+
+    local completionConnection = tween.Completed:Connect(function(state)
+        completed = true
+        playbackState = state
+    end)
+
+    tween:Play()
+
+    while not completed do
+        task.wait(0.05)
+
+        if targetModel and not isCachedModelUsable(targetModel, "Mobs") then
+            tween:Cancel()
+            break
+        end
+
+        if destroyed or not gui.Parent or not character.Parent then
+            tween:Cancel()
+            break
+        end
     end
 
-    return nil
+    completionConnection:Disconnect()
+    pivotConnection:Disconnect()
+
+    if activeTween == tween then
+        activeTween = nil
+    end
+
+    if activeDriver == driver then
+        activeDriver = nil
+    end
+
+    driver:Destroy()
+
+    if playbackState ~= Enum.PlaybackState.Completed then
+        error("MOVEMENT INTERRUPTED OR TARGET REMOVED")
+    end
+end
+
+updateSelectedStatus = function()
+    if not selectedTarget then
+        selectedLabel.Text = "NONE"
+        modelStatus.Text = "STATUS: NOT SELECTED"
+        teleportButton.Active = false
+        teleportButton.Text = "TELEPORT TO MODEL"
+        return
+    end
+
+    local target = selectedTarget
+    local model = resolveSelectedModel(target)
+    local count = countAvailable(target.Folder, target.Name)
+
+    selectedLabel.Text = "[" .. target.Folder .. "] "
+        .. target.Name
+        .. " | "
+        .. count
+        .. " AVAILABLE"
+
+    if not model then
+        modelStatus.Text = target.Folder == "Mobs"
+            and "NO LIVING MOB FOUND"
+            or "CURRENT NPC UNAVAILABLE"
+        teleportButton.Active = false
+        teleportButton.Text = "NO AVAILABLE TARGET"
+        return
+    end
+
+    if mountState and mountState.Model == model then
+        modelStatus.Text = "LYING FACE-UP ABOVE MOB HEAD"
+        teleportButton.Active = false
+        teleportButton.Text = "MOUNTED"
+        return
+    end
+
+    if teleporting then
+        modelStatus.Text = "TARGET: " .. model.Name .. " / MOVING"
+        teleportButton.Active = false
+        teleportButton.Text = "MOVING..."
+        return
+    end
+
+    if target.Folder == "Mobs" and not mobTeleportEnabled then
+        modelStatus.Text = "AVAILABLE / MOB TP OFF"
+        teleportButton.Active = false
+        teleportButton.Text = "MOB TELEPORT OFF"
+        return
+    end
+
+    modelStatus.Text = target.Folder == "Mobs"
+        and "AUTO NEXT SAME-NAME MOB ENABLED"
+        or "NPC TARGET AVAILABLE"
+
+    teleportButton.Active = true
+    teleportButton.Text = "TELEPORT TO SELECTED MODEL"
 end
 
 local function clearDropdown()
     table.clear(dropdownRows)
-
     for _, child in ipairs(dropdownList:GetChildren()) do
         if child:IsA("GuiObject") then
             child:Destroy()
@@ -1496,95 +1563,6 @@ local function updateDropdownCounts()
     end
 end
 
-updateSelectedStatus = function()
-    if not selectedTarget then
-        selectedLabel.Text = "NONE"
-        modelStatus.Text = "STATUS: NOT SELECTED"
-
-        teleportButton.Active = false
-        teleportButton.Text = "TELEPORT TO MODEL"
-        return
-    end
-
-    local target = selectedTarget
-    local model = resolveSelectedModel(target)
-
-    local availableCount = countAvailable(
-        target.Folder,
-        target.Name
-    )
-
-    selectedLabel.Text = "[" .. target.Folder .. "] "
-        .. target.Name
-        .. " | "
-        .. availableCount
-        .. " AVAILABLE"
-
-    if not model then
-        modelStatus.Text = target.Folder == "Mobs"
-            and "NO LIVING MOB FOUND"
-            or "CURRENT NPC UNAVAILABLE"
-
-        teleportButton.Active = false
-        teleportButton.Text = "NO AVAILABLE TARGET"
-        return
-    end
-
-    if mountState and mountState.Model == model then
-        modelStatus.Text = "RIDING MOB BACK"
-
-        teleportButton.Active = false
-        teleportButton.Text = "MOUNTED"
-        return
-    end
-
-    if teleporting then
-        modelStatus.Text = "TARGET: " .. model.Name .. " / MOVING"
-
-        teleportButton.Active = false
-        teleportButton.Text = "MOVING..."
-        return
-    end
-
-    if target.Folder == "Mobs" and not mobTeleportEnabled then
-        modelStatus.Text = "AVAILABLE / MOB TP OFF"
-
-        teleportButton.Active = false
-        teleportButton.Text = "MOB TELEPORT OFF"
-        return
-    end
-
-    modelStatus.Text = target.Folder == "Mobs"
-        and "AUTO NEXT SAME-NAME MOB ENABLED"
-        or "NPC TARGET AVAILABLE"
-
-    teleportButton.Active = true
-    teleportButton.Text = "TELEPORT TO SELECTED MODEL"
-end
-
-backFollowButton.Activated:Connect(function()
-    if teleporting then
-        feedbackLabel.Text = "WAIT UNTIL TELEPORT FINISHES"
-        return
-    end
-
-    backFollowEnabled = not backFollowEnabled
-    SETTINGS.MobBackFollowEnabled = backFollowEnabled
-
-    updateBackFollowToggle()
-
-    if not backFollowEnabled and mountState then
-        stopMount()
-        feedbackLabel.Text = "DISMOUNTED"
-    else
-        feedbackLabel.Text = backFollowEnabled
-            and "BACK FOLLOW ENABLED"
-            or "BACK FOLLOW DISABLED"
-    end
-
-    updateSelectedStatus()
-end)
-
 local function createDropdownRow(group, index)
     local count = countAvailable(group.Folder, group.Name)
 
@@ -1593,13 +1571,7 @@ local function createDropdownRow(group, index)
         Size = UDim2.new(1, 0, 0, 29),
         BackgroundColor3 = COLORS.Element,
         BorderSizePixel = 0,
-
-        Text = "[" .. group.Folder .. "] "
-            .. group.Name
-            .. " | "
-            .. count
-            .. " AVAILABLE",
-
+        Text = "[" .. group.Folder .. "] " .. group.Name .. " | " .. count .. " AVAILABLE",
         TextColor3 = COLORS.White,
         TextSize = 9,
         Font = Enum.Font.GothamBold,
@@ -1625,31 +1597,21 @@ local function createDropdownRow(group, index)
             return
         end
 
-        if mountState then
-            if group.Folder ~= "Mobs"
-                or group.Name ~= mountState.Name then
-
-                stopMount()
-            end
+        if mountState and (
+            group.Folder ~= "Mobs" or group.Name ~= mountState.Name
+        ) then
+            stopMount()
         end
 
         selectedTarget = {
             Folder = group.Folder,
             Name = group.Name,
-            CurrentModel = findNearestLiveModel(
-                group.Folder,
-                group.Name
-            ),
+            CurrentModel = findNearestLiveModel(group.Folder, group.Name),
         }
 
-        dropdownButton.Text = "[" .. group.Folder .. "] "
-            .. group.Name
-            .. "     ▼"
-
+        dropdownButton.Text = "[" .. group.Folder .. "] " .. group.Name .. " ▼"
         dropdownList.Visible = false
-
         feedbackLabel.Text = "SELECTED GROUP: " .. group.Name
-
         updateSelectedStatus()
     end)
 end
@@ -1667,7 +1629,6 @@ local function searchModels()
         if query == ""
             or string.find(name, query, 1, true)
             or string.find(folder, query, 1, true) then
-
             table.insert(matches, group)
         end
     end
@@ -1693,64 +1654,58 @@ local function searchModels()
     updateSelectedStatus()
 end
 
-searchButton.Activated:Connect(function()
-    searchModels()
-    dropdownList.Visible = true
-end)
+local function updateMobToggle()
+    mobToggleButton.Text = mobTeleportEnabled and "ON" or "OFF"
+    toggleDescription.Text = mobTeleportEnabled
+        and "AUTO NEXT SAME-NAME MOB: ON"
+        or "MOB TELEPORT DISABLED"
+end
 
-searchBox.FocusLost:Connect(function(enterPressed)
-    if enterPressed then
-        searchModels()
-        dropdownList.Visible = true
+local function updateESPToggle()
+    espToggleButton.Text = espEnabled and "ON" or "OFF"
+    espDescription.Text = espEnabled
+        and "OUTLINE ONLY / OCCLUDED"
+        or "MOB ESP DISABLED"
+
+    if not espEnabled then
+        clearESP()
     end
-end)
+end
 
-dropdownButton.Activated:Connect(function()
-    dropdownList.Visible = not dropdownList.Visible
-
-    if dropdownList.Visible then
-        searchModels()
-    end
-end)
+local function updateBackFollowToggle()
+    backFollowButton.Text = backFollowEnabled and "ON" or "OFF"
+    backFollowDescription.Text = backFollowEnabled
+        and "STAY 5 STUDS ABOVE MOB HEAD"
+        or "HEAD FOLLOW DISABLED"
+end
 
 local function playCharacterTween(
     character,
-    root,
     rootDestination,
+    rootToPivot,
     duration,
     style,
-    targetModel,
-    rootToPivot
+    targetModel
 )
-    local startingPivot = character:GetPivot()
-    local targetPivot = rootDestination * rootToPivot
-
     local driver = Instance.new("CFrameValue")
-    driver.Value = startingPivot
-
+    driver.Value = character:GetPivot()
     activeDriver = driver
 
-    local pivotConnection =
-        driver:GetPropertyChangedSignal("Value"):Connect(function()
-            if character.Parent then
-                character:PivotTo(driver.Value)
-            end
-        end)
+    local pivotConnection = driver:GetPropertyChangedSignal("Value"):Connect(function()
+        if character.Parent then
+            character:PivotTo(driver.Value)
+        end
+    end)
 
     local tween = TweenService:Create(
         driver,
-        TweenInfo.new(
-            duration,
-            style or Enum.EasingStyle.Linear,
-            Enum.EasingDirection.InOut
-        ),
+        TweenInfo.new(duration, style or Enum.EasingStyle.Linear, Enum.EasingDirection.InOut),
         {
-            Value = targetPivot
+            Value = rootDestination * rootToPivot
         }
     )
 
     activeTween = tween
-
     local completed = false
     local playbackState = nil
 
@@ -1764,9 +1719,7 @@ local function playCharacterTween(
     while not completed do
         task.wait(0.05)
 
-        if targetModel
-            and not isCachedModelUsable(targetModel, "Mobs") then
-
+        if targetModel and not isCachedModelUsable(targetModel, "Mobs") then
             tween:Cancel()
             break
         end
@@ -1813,7 +1766,6 @@ local function smoothTeleport(target)
     end
 
     local model = resolveSelectedModel(target)
-
     if not model then
         feedbackLabel.Text = "NO LIVING TARGET FOUND"
         updateSelectedStatus()
@@ -1821,7 +1773,6 @@ local function smoothTeleport(target)
     end
 
     local character = player.Character
-
     if not character then
         feedbackLabel.Text = "CHARACTER NOT LOADED"
         return
@@ -1836,40 +1787,25 @@ local function smoothTeleport(target)
     end
 
     local destination
-    local errorMessage
-
     if isNPC then
         destination = SETTINGS.NPCWorldPivot
     else
-        destination = getMobBackCFrame(
-            model,
-            humanoid,
-            root
-        )
-
+        destination = getMobTopCFrame(model)
         if not destination then
-            feedbackLabel.Text = "CANNOT FIND MOB BACK"
+            feedbackLabel.Text = "CANNOT FIND MOB HEAD"
             return
         end
     end
 
     local startingPosition
-
     if isNPC then
         startingPosition = destination
-            * CFrame.new(
-                0,
-                -SETTINGS.NPCBelowDistance,
-                0
-            )
+            * CFrame.new(0, -SETTINGS.NPCBelowDistance, 0)
     else
         startingPosition = destination
     end
 
-    local distance = (
-        startingPosition.Position - root.Position
-    ).Magnitude
-
+    local distance = (startingPosition.Position - root.Position).Magnitude
     local travelDuration = math.clamp(
         distance / SETTINGS.TeleportSpeed,
         SETTINGS.MinDuration,
@@ -1879,117 +1815,84 @@ local function smoothTeleport(target)
     teleporting = true
     updateSelectedStatus()
 
-    local savedState = captureCharacterState(
-        character,
-        humanoid,
-        root
-    )
-
+    local savedState = captureCharacterState(character, humanoid, root)
     activeSavedState = savedState
-
     local rootToPivot = savedState.RootToPivot
-
-    local look = root.CFrame.LookVector
-    local flatLook = Vector3.new(look.X, 0, look.Z)
-
-    if flatLook.Magnitude < 0.01 then
-        flatLook = Vector3.new(0, 0, -1)
-    else
-        flatLook = flatLook.Unit
-    end
-
-    local uprightStart = CFrame.lookAt(
-        root.Position,
-        root.Position + flatLook
-    )
-
-    local laidStart = uprightStart * LAY_ROTATION
-    local laidDestination = startingPosition * LAY_ROTATION
 
     local success, err = pcall(function()
         humanoid:ChangeState(Enum.HumanoidStateType.Physics)
 
-        feedbackLabel.Text = "LYING DOWN..."
-
-        playCharacterTween(
-            character,
-            root,
-            laidStart,
-            SETTINGS.LayDuration,
-            Enum.EasingStyle.Sine,
-            nil,
-            rootToPivot
-        )
-
-        feedbackLabel.Text = isNPC
-            and "APPROACHING NPC..."
-            or "MOVING TO MOB BACK..."
-
-        playCharacterTween(
-            character,
-            root,
-            laidDestination,
-            travelDuration,
-            Enum.EasingStyle.Linear,
-            isMob and model or nil,
-            rootToPivot
-        )
-
         if isMob then
+            local mobForward = getMobForward(model)
+
+            local proneStart = CFrame.lookAt(
+                root.Position,
+                root.Position + Vector3.new(0, 1, 0),
+                mobForward
+            )
+
+            feedbackLabel.Text = "MOVING FACE-UP ABOVE MOB HEAD..."
+
+            playCharacterTween(
+                character,
+                proneStart,
+                rootToPivot,
+                SETTINGS.LayDuration,
+                Enum.EasingStyle.Sine
+            )
+
+            playCharacterTween(
+                character,
+                destination,
+                rootToPivot,
+                travelDuration,
+                Enum.EasingStyle.Linear,
+                model
+            )
+
             if not isCachedModelUsable(model, "Mobs") then
                 error("MOB DIED DURING TRAVEL")
             end
 
-            if backFollowEnabled then
-                destination = getMobBackCFrame(
-                    model,
-                    humanoid,
-                    root
-                )
-
-                if not destination then
-                    error("CANNOT FIND MOB BACK")
-                end
+            local updatedTop = getMobTopCFrame(model)
+            if updatedTop then
+                destination = updatedTop
             end
-        end
+        else
+            local npcStart = destination
+                * CFrame.new(0, -SETTINGS.NPCBelowDistance, 0)
+                * CFrame.Angles(math.rad(90), 0, 0)
 
-        if isNPC then
+            feedbackLabel.Text = "APPROACHING NPC..."
+
+            playCharacterTween(
+                character,
+                npcStart,
+                rootToPivot,
+                travelDuration,
+                Enum.EasingStyle.Linear
+            )
+
             feedbackLabel.Text = "SLOWLY ASCENDING..."
 
             playCharacterTween(
                 character,
-                root,
-                destination * LAY_ROTATION,
+                destination * CFrame.Angles(math.rad(90), 0, 0),
+                rootToPivot,
                 SETTINGS.NPCRiseDuration,
-                Enum.EasingStyle.Sine,
-                nil,
-                rootToPivot
-            )
-        end
-
-        if isMob and backFollowEnabled then
-            local currentBack = getMobBackCFrame(
-                model,
-                humanoid,
-                root
+                Enum.EasingStyle.Sine
             )
 
-            if currentBack then
-                destination = currentBack
-            end
+            feedbackLabel.Text = "STANDING UP..."
+
+            playCharacterTween(
+                character,
+                destination,
+                rootToPivot,
+                SETTINGS.StandDuration,
+                Enum.EasingStyle.Sine
+            )
         end
-
-        feedbackLabel.Text = "STANDING UP..."
-
-        playCharacterTween(
-            character,
-            root,
-            destination,
-            SETTINGS.StandDuration,
-            Enum.EasingStyle.Sine,
-            nil,
-            rootToPivot
-        )
     end)
 
     if activeTween then
@@ -2012,7 +1915,7 @@ local function smoothTeleport(target)
     if shouldMount then
         startMobMount(model, savedState)
     else
-        restoreCharacterState(savedState)
+        restoreCharacterState(savedState, true)
     end
 
     updateSelectedStatus()
@@ -2021,9 +1924,9 @@ local function smoothTeleport(target)
         if isNPC then
             feedbackLabel.Text = "ARRIVED AT NPC WORLD PIVOT"
         elseif shouldMount then
-            feedbackLabel.Text = "MOUNTED ON " .. target.Name
+            feedbackLabel.Text = "LYING FACE-UP 5 STUDS ABOVE MOB HEAD"
         else
-            feedbackLabel.Text = "ARRIVED AT " .. target.Name
+            feedbackLabel.Text = "ARRIVED ABOVE " .. target.Name
         end
     elseif isMob and not isCachedModelUsable(model, "Mobs") then
         feedbackLabel.Text = "MOB DIED - NEXT SAME-NAME TARGET SELECTED"
@@ -2037,45 +1940,27 @@ teleportButton.Activated:Connect(function()
         feedbackLabel.Text = "SELECT A MODEL FIRST"
         return
     end
-
     smoothTeleport(selectedTarget)
 end)
 
-local function updateMobToggle()
-    mobToggleButton.Text = mobTeleportEnabled and "ON" or "OFF"
+searchButton.Activated:Connect(function()
+    searchModels()
+    dropdownList.Visible = true
+end)
 
-    toggleDescription.Text = mobTeleportEnabled
-        and "AUTO NEXT SAME-NAME MOB: ON"
-        or "MOB TELEPORT DISABLED"
-end
-
-local function updateESPToggle()
-    espToggleButton.Text = espEnabled and "ON" or "OFF"
-
-    espDescription.Text = espEnabled
-        and "OUTLINE ONLY / OCCLUDED"
-        or "MOB ESP DISABLED"
-
-    if not espEnabled then
-        clearESP()
+searchBox.FocusLost:Connect(function(enterPressed)
+    if enterPressed then
+        searchModels()
+        dropdownList.Visible = true
     end
-end
+end)
 
-local function updateAutoClickToggle()
-    autoClickButton.Text = autoClickEnabled and "ON" or "OFF"
-
-    autoClickDescription.Text = autoClickEnabled
-        and "TOOL ACTIVATE / NO MOUSE INPUT"
-        or "AUTO CLICK DISABLED"
-end
-
-local function updateBackFollowToggle()
-    backFollowButton.Text = backFollowEnabled and "ON" or "OFF"
-
-    backFollowDescription.Text = backFollowEnabled
-        and "FOLLOW MOB POSITION AND ROTATION"
-        or "BACK FOLLOW DISABLED"
-end
+dropdownButton.Activated:Connect(function()
+    dropdownList.Visible = not dropdownList.Visible
+    if dropdownList.Visible then
+        searchModels()
+    end
+end)
 
 mobToggleButton.Activated:Connect(function()
     if teleporting then
@@ -2085,7 +1970,6 @@ mobToggleButton.Activated:Connect(function()
 
     mobTeleportEnabled = not mobTeleportEnabled
     SETTINGS.MobTeleportEnabled = mobTeleportEnabled
-
     updateMobToggle()
     updateSelectedStatus()
 end)
@@ -2093,16 +1977,8 @@ end)
 espToggleButton.Activated:Connect(function()
     espEnabled = not espEnabled
     SETTINGS.ESPEnabled = espEnabled
-
     updateESPToggle()
     updateESP()
-end)
-
-autoClickButton.Activated:Connect(function()
-    autoClickEnabled = not autoClickEnabled
-    SETTINGS.AutoClickEnabled = autoClickEnabled
-
-    updateAutoClickToggle()
 end)
 
 backFollowButton.Activated:Connect(function()
@@ -2113,7 +1989,6 @@ backFollowButton.Activated:Connect(function()
 
     backFollowEnabled = not backFollowEnabled
     SETTINGS.MobBackFollowEnabled = backFollowEnabled
-
     updateBackFollowToggle()
 
     if not backFollowEnabled and mountState then
@@ -2121,8 +1996,8 @@ backFollowButton.Activated:Connect(function()
         feedbackLabel.Text = "DISMOUNTED"
     else
         feedbackLabel.Text = backFollowEnabled
-            and "BACK FOLLOW ENABLED"
-            or "BACK FOLLOW DISABLED"
+            and "HEAD FOLLOW ENABLED"
+            or "HEAD FOLLOW DISABLED"
     end
 
     updateSelectedStatus()
@@ -2137,6 +2012,10 @@ local function cleanup()
     dragging = false
     dragInput = nil
 
+    autoClickEnabled = false
+    SETTINGS.AutoClickEnabled = false
+    deactivateEquippedTool()
+
     if activeTween then
         activeTween:Cancel()
         activeTween = nil
@@ -2150,10 +2029,15 @@ local function cleanup()
     stopMount()
 
     if activeSavedState then
-        restoreCharacterState(activeSavedState)
+        restoreCharacterState(activeSavedState, true)
     end
 
     clearESP()
+
+    for _, connection in ipairs(globalConnections) do
+        connection:Disconnect()
+    end
+    table.clear(globalConnections)
 end
 
 destroyButton.Activated:Connect(function()
@@ -2163,16 +2047,18 @@ end)
 
 gui.Destroying:Connect(cleanup)
 
-player.CharacterAdded:Connect(function()
+connectGlobal(player.CharacterAdded, function()
     if mountState then
         stopMount()
+    end
+    if autoClickEnabled then
+        feedbackLabel.Text = "CHARACTER RESPAWNED - AUTO CLICK READY"
     end
 end)
 
 task.spawn(function()
     while gui.Parent and not destroyed do
         refreshModelCache()
-
         updateWorkspaceStatus()
         updateSelectedStatus()
         updateDropdownCounts()
@@ -2192,30 +2078,34 @@ task.spawn(function()
     end
 end)
 
+local autoClickWorkerRunning = true
+
 task.spawn(function()
-    while gui.Parent and not destroyed do
+    while autoClickWorkerRunning and gui.Parent and not destroyed do
         if autoClickEnabled and not teleporting then
             local character = player.Character
-
             local humanoid = character
                 and character:FindFirstChildOfClass("Humanoid")
 
-            local tool
+            local tool = getEquippedTool()
 
-            if character then
-                for _, object in ipairs(character:GetChildren()) do
-                    if object:IsA("Tool") and object.Enabled then
-                        tool = object
-                        break
-                    end
-                end
-            end
+            if humanoid and humanoid.Health > 0 and tool
+                and tool.Parent == character and tool.Enabled then
 
-            if humanoid and humanoid.Health > 0 and tool then
                 pcall(function()
-                    if tool.Parent == character and tool.Enabled then
+                    if autoClickEnabled and tool.Parent == character then
                         tool:Activate()
                     end
+                end)
+
+                local pulseStarted = os.clock()
+                while autoClickEnabled
+                    and os.clock() - pulseStarted < SETTINGS.AutoClickPulseDuration do
+                    task.wait(0.01)
+                end
+
+                pcall(function()
+                    tool:Deactivate()
                 end)
             end
         end
@@ -2224,16 +2114,15 @@ task.spawn(function()
     end
 end)
 
-refreshModelCache()
-updateWorkspaceStatus()
-searchModels()
-
 updateMobToggle()
 updateESPToggle()
 updateAutoClickToggle()
 updateBackFollowToggle()
 
+refreshModelCache()
+updateWorkspaceStatus()
+searchModels()
 updateSelectedStatus()
 updateESP()
 
-print("[MobsSearch] Loaded successfully.")
+print("[MobsSearch] Head follow system loaded successfully.")
