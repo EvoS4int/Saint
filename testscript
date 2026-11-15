@@ -8,7 +8,7 @@ local playerGui = player:WaitForChild("PlayerGui")
 
 local SETTINGS = {
     GUIWidth = 700,
-    GUIHeight = 540,
+    GUIHeight = 560,
 
     TeleportSpeed = 14,
     MinTravelSpeed = 1,
@@ -634,42 +634,50 @@ local backFollowButton = makeButton(
 local workspaceTitle = makeLabel(
     right,
     "WorkspaceTitle",
-    "WORKSPACE STATUS",
+    "WORKSPACE FOLDERS",
     UDim2.new(1, 0, 0, 17),
     UDim2.fromOffset(0, 292),
     10,
     true
 )
 
+workspaceTitle.Font = Enum.Font.GothamBold
+
 local folderPanel = makePanel(
     right,
     "FolderPanel",
-    UDim2.new(1, 0, 0, 86),
+    UDim2.new(1, 0, 0, 116),
     UDim2.fromOffset(0, 313)
 )
 
 local function createFolderStatus(name, x, y, width)
     return makeLabel(
         folderPanel,
-        name,
+        name .. "Status",
         name .. ": CHECKING",
-        UDim2.fromOffset(width, 28),
+        UDim2.fromOffset(width, 22),
         UDim2.fromOffset(x, y),
         9
     )
 end
 
-local mobsStatus = createFolderStatus("Mobs", 10, 5, 145)
-local npcsStatus = createFolderStatus("NPCs", 180, 5, 145)
-local chestSpawnsStatus = createFolderStatus("ChestSpawns", 10, 48, 160)
-local chestsStatus = createFolderStatus("Chests", 180, 48, 145)
+local folderStatuses = {
+    Mobs = createFolderStatus("Mobs", 10, 4, 145),
+    NPCs = createFolderStatus("NPCs", 180, 4, 145),
+    Ores = createFolderStatus("Ores", 10, 31, 145),
+    Map = createFolderStatus("Map", 180, 31, 145),
+    Mirrors = createFolderStatus("Mirrors", 10, 58, 145),
+    GoldChests = createFolderStatus("GoldChests", 180, 58, 145),
+    Chests = createFolderStatus("Chests", 10, 85, 145),
+    ChestSpawns = createFolderStatus("ChestSpawns", 180, 85, 145),
+}
 
 local teleportButton = makeButton(
     right,
     "TeleportButton",
     "TELEPORT TO SELECTED MOB",
     UDim2.new(1, 0, 0, 38),
-    UDim2.fromOffset(0, 407)
+    UDim2.fromOffset(0, 437)
 )
 teleportButton.Active = false
 
@@ -677,8 +685,8 @@ local feedbackLabel = makeLabel(
     right,
     "Feedback",
     "Select a mob group to begin.",
-    UDim2.new(1, 0, 0, 25),
-    UDim2.fromOffset(0, 449),
+    UDim2.new(1, 0, 0, 22),
+    UDim2.fromOffset(0, 479),
     9,
     true
 )
@@ -693,15 +701,10 @@ local function getFolder(name)
 end
 
 local function updateWorkspaceStatus()
-    local folders = {
-        Mobs = mobsStatus,
-        NPCs = npcsStatus,
-        ChestSpawns = chestSpawnsStatus,
-        Chests = chestsStatus,
-    }
-
-    for name, label in pairs(folders) do
-        label.Text = name .. (getFolder(name) and ": AVAILABLE" or ": MISSING")
+    for name, label in pairs(folderStatuses) do
+        local folder = getFolder(name)
+        label.Text = name .. (folder and ": AVAILABLE" or ": MISSING")
+        label.TextColor3 = COLORS.White
     end
 end
 
