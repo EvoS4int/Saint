@@ -2,6 +2,7 @@ local Players = game:GetService("Players")
 local TweenService = game:GetService("TweenService")
 local UserInputService = game:GetService("UserInputService")
 local RunService = game:GetService("RunService")
+local CollectionService = game:GetService("CollectionService")
 
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
@@ -208,7 +209,7 @@ title.Font = Enum.Font.GothamBold
 local subtitle = makeLabel(
     header,
     "Subtitle",
-    "HEAD FOLLOW / ESP",
+    "NPC / MOB SEPARATION",
     UDim2.fromOffset(170, 44),
     UDim2.fromOffset(180, 0),
     9,
@@ -693,17 +694,92 @@ local feedbackLabel = makeLabel(
 feedbackLabel.TextXAlignment = Enum.TextXAlignment.Center
 
 local function getFolder(name)
+    if name == "NPCs" then
+        for _, candidateName in ipairs({
+            "NPCs",
+            "NPC",
+            "NonPlayerCharacters",
+        }) do
+            local folder = workspace:FindFirstChild(candidateName)
+                or workspace:FindFirstChild(candidateName, true)
+
+            if folder and folder:IsA("Folder") then
+                return folder
+            end
+        end
+
+        return nil
+    end
+
     local folder = workspace:FindFirstChild(name)
+
     if folder and folder:IsA("Folder") then
         return folder
     end
+
     return nil
+end
+
+local function isNPCModel(model)
+    if not model or not model:IsA("Model") then
+        return false
+    end
+
+    if model:GetAttribute("IsNPC") == true
+        or model:GetAttribute("NPC") == true
+        or model:GetAttribute("NonPlayerCharacter") == true then
+        return true
+    end
+
+    for _, tagName in ipairs({"NPC", "NPCs", "NonPlayerCharacter"}) do
+        local tagged = false
+        pcall(function()
+            tagged = CollectionService:HasTag(model, tagName)
+        end)
+        if tagged then
+            return true
+        end
+    end
+
+    local ancestor = model.Parent
+    while ancestor and ancestor ~= workspace do
+        if ancestor:IsA("Folder") then
+            local folderName = ancestor.Name:lower()
+            if folderName == "npc" or folderName == "npcs"
+                or folderName == "nonplayercharacters" then
+                return true
+            end
+        end
+        ancestor = ancestor.Parent
+    end
+
+    return false
+end
+
+local function hasMarkedNPCInMobs()
+    local mobsFolder = workspace:FindFirstChild("Mobs")
+    if not mobsFolder or not mobsFolder:IsA("Folder") then
+        return false
+    end
+
+    for _, object in ipairs(mobsFolder:GetDescendants()) do
+        if object:IsA("Model") and isNPCModel(object) then
+            return true
+        end
+    end
+
+    return false
 end
 
 local function updateWorkspaceStatus()
     for name, label in pairs(folderStatuses) do
-        local folder = getFolder(name)
-        label.Text = name .. (folder and ": AVAILABLE" or ": MISSING")
+        local available = getFolder(name) ~= nil
+
+        if name == "NPCs" and not available then
+            available = hasMarkedNPCInMobs()
+        end
+
+        label.Text = name .. (available and ": AVAILABLE" or ": MISSING")
         label.TextColor3 = COLORS.White
     end
 end
@@ -753,16 +829,59 @@ local modelCache = {
     Groups = {},
 }
 
-local function getTopLevelModels(folder)
-    if not folder then
-        return {}
+local function hasModelAncestorBefore(model, rootFolder)
+    local ancestor = model.Parent
+
+    while ancestor and ancestor ~= rootFolder do
+        if ancestor:IsA("Model") then
+            return true
+        end
+        ancestor = ancestor.Parent
     end
 
-    local results = {}
+    return false
+end
 
-    for _, object in ipairs(folder:GetChildren()) do
-        if object:IsA("Model") then
-            table.insert(results, object)
+local function getTopLevelModels(folderName)
+    local results = {}
+    local seen = {}
+
+    local function addFromRoot(rootFolder, npcOnly)
+        if not rootFolder then
+            return
+        end
+
+        for _, object in ipairs(rootFolder:GetDescendants()) do
+            if object:IsA("Model")
+                and not hasModelAncestorBefore(object, rootFolder) then
+
+                local classifiedNPC = isNPCModel(object)
+                local include = npcOnly and classifiedNPC
+                    or (not npcOnly and not classifiedNPC)
+
+                if include and not seen[object] then
+                    seen[object] = true
+                    table.insert(results, object)
+                end
+            end
+        end
+    end
+
+    if folderName == "Mobs" then
+        local mobsFolder = workspace:FindFirstChild("Mobs")
+        if mobsFolder and mobsFolder:IsA("Folder") then
+            addFromRoot(mobsFolder, false)
+        end
+    elseif folderName == "NPCs" then
+        local npcsFolder = getFolder("NPCs")
+        local mobsFolder = workspace:FindFirstChild("Mobs")
+
+        if npcsFolder then
+            addFromRoot(npcsFolder, true)
+        end
+
+        if mobsFolder and mobsFolder:IsA("Folder") then
+            addFromRoot(mobsFolder, true)
         end
     end
 
@@ -788,7 +907,7 @@ local function refreshModelCache()
         local folder = getFolder(folderName)
 
         if folder then
-            local models = getTopLevelModels(folder)
+            local models = getTopLevelModels(folderName)
             newCache.ModelsByFolder[folderName] = models
 
             for _, model in ipairs(models) do
@@ -832,8 +951,28 @@ local function isCachedModelUsable(model, folderName)
         return false
     end
 
-    local folder = getFolder(folderName)
-    if not folder or model.Parent ~= folder then
+    local mobsFolder = workspace:FindFirstChild("Mobs")
+    local npcsFolder = getFolder("NPCs")
+    local belongsToFolder = false
+
+    if folderName == "Mobs" then
+        belongsToFolder = mobsFolder ~= nil
+            and mobsFolder:IsA("Folder")
+            and model:IsDescendantOf(mobsFolder)
+            and not isNPCModel(model)
+    elseif folderName == "NPCs" then
+        local insideNPCFolder = npcsFolder ~= nil
+            and model:IsDescendantOf(npcsFolder)
+
+        local markedInsideMobs = mobsFolder ~= nil
+            and mobsFolder:IsA("Folder")
+            and model:IsDescendantOf(mobsFolder)
+            and isNPCModel(model)
+
+        belongsToFolder = insideNPCFolder or markedInsideMobs
+    end
+
+    if not belongsToFolder then
         return false
     end
 
