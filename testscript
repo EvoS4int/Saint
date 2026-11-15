@@ -9,7 +9,7 @@ local playerGui = player:WaitForChild("PlayerGui")
 
 local SETTINGS = {
     GUIWidth = 700,
-    GUIHeight = 560,
+    GUIHeight = 620,
 
     TeleportSpeed = 14,
     MinTravelSpeed = 1,
@@ -51,6 +51,9 @@ local SETTINGS = {
     -- Every other Workspace folder (Ores, Chests, Map, ...) is rescanned this often
     FullScanRate = 6,
     MountUpdateRate = 1 / 60,
+    MobSearchInterval = 0.4,      -- retry the selected mob group while teleport mode is ON
+    AutoFarmRadius = 150,         -- only choose mobs within this many studs
+    AutoFarmSearchInterval = 0.6, -- retry nearby mob discovery at this interval
 
     -- Search everything inside every Workspace folder
     IncludeLooseParts = true,   -- also list single Parts (ores, chests, etc.) that are not inside a Model
@@ -80,6 +83,8 @@ local mobTeleportEnabled = SETTINGS.MobTeleportEnabled
 local espEnabled = SETTINGS.ESPEnabled
 local autoClickEnabled = SETTINGS.AutoClickEnabled
 local backFollowEnabled = SETTINGS.MobBackFollowEnabled
+local autoFarmEnabled = false
+local farmCurrentTarget = nil
 
 local espHighlights = {}
 local dropdownRows = {}
@@ -87,6 +92,8 @@ local globalConnections = {}
 
 local mountState = nil
 local mountConnection = nil
+local mobSearchToken = 0
+local autoFarmToken = 0
 local destroyed = false
 
 local searchToken = 0
@@ -438,7 +445,7 @@ local modelStatus = makeLabel(
 
 local right = create("Frame", {
     Name = "RightPanel",
-    Size = UDim2.fromOffset(336, 480),
+    Size = UDim2.fromOffset(336, 568),
     Position = UDim2.fromOffset(350, 54),
     BackgroundTransparency = 1,
 }, main)
@@ -646,12 +653,49 @@ local backFollowButton = makeButton(
     UDim2.new(1, -77, 0.5, -14)
 )
 
+local autoFarmPanel = makePanel(
+    right,
+    "AutoFarmPanel",
+    UDim2.new(1, 0, 0, 49),
+    UDim2.fromOffset(0, 292)
+)
+
+local autoFarmTitle = makeLabel(
+    autoFarmPanel,
+    "AutoFarmTitle",
+    "AUTOFARM NEARBY MOBS",
+    UDim2.fromOffset(220, 20),
+    UDim2.fromOffset(10, 4),
+    10
+)
+autoFarmTitle.Font = Enum.Font.GothamBold
+
+local autoFarmDescription = makeLabel(
+    autoFarmPanel,
+    "AutoFarmDescription",
+    "ALL MOB NAMES / 150 STUD RADIUS",
+    UDim2.fromOffset(230, 17),
+    UDim2.fromOffset(10, 26),
+    8,
+    true
+)
+
+local autoFarmButton = makeButton(
+    autoFarmPanel,
+    "AutoFarmButton",
+    "OFF",
+    UDim2.fromOffset(65, 29),
+    UDim2.new(1, -77, 0.5, -14)
+)
+
+autoFarmButton.ZIndex = 10
+
 local workspaceTitle = makeLabel(
     right,
     "WorkspaceTitle",
     "WORKSPACE FOLDERS",
     UDim2.new(1, 0, 0, 17),
-    UDim2.fromOffset(0, 292),
+    UDim2.fromOffset(0, 346),
     10,
     true
 )
@@ -662,7 +706,7 @@ local folderPanel = makePanel(
     right,
     "FolderPanel",
     UDim2.new(1, 0, 0, 116),
-    UDim2.fromOffset(0, 313)
+    UDim2.fromOffset(0, 367)
 )
 
 local function createFolderStatus(name, x, y, width)
@@ -692,7 +736,7 @@ local teleportButton = makeButton(
     "TeleportButton",
     "TELEPORT TO MODEL",
     UDim2.fromOffset(165, 38),
-    UDim2.fromOffset(0, 437)
+    UDim2.fromOffset(0, 491)
 )
 teleportButton.Active = false
 
@@ -701,7 +745,7 @@ local returnButton = makeButton(
     "ReturnToMeButton",
     "RETURN TO ME",
     UDim2.fromOffset(165, 38),
-    UDim2.fromOffset(171, 437)
+    UDim2.fromOffset(171, 491)
 )
 returnButton.Active = false
 
@@ -710,7 +754,7 @@ local feedbackLabel = makeLabel(
     "Feedback",
     "Select a model group to begin.",
     UDim2.new(1, 0, 0, 22),
-    UDim2.fromOffset(0, 479),
+    UDim2.fromOffset(0, 533),
     9,
     true
 )
@@ -1178,6 +1222,29 @@ local function findNearestLiveModel(folderName, modelName)
         if distance < closestDistance then
             closestDistance = distance
             closestModel = model
+        end
+    end
+
+    return closestModel
+end
+
+local function findNearestLiveMob(maxDistance)
+    local character = player.Character
+    local root = character and character:FindFirstChild("HumanoidRootPart")
+    local origin = root and root.Position
+        or (character and character:GetPivot().Position)
+        or Vector3.zero
+
+    local closestModel = nil
+    local closestDistance = maxDistance or SETTINGS.AutoFarmRadius
+
+    for _, model in ipairs(modelCache.ModelsByFolder.Mobs or {}) do
+        if isCachedModelUsable(model, "Mobs") then
+            local distance = (getModelPosition(model) - origin).Magnitude
+            if distance <= closestDistance then
+                closestDistance = distance
+                closestModel = model
+            end
         end
     end
 
@@ -1694,7 +1761,10 @@ stopMount = function()
     restoreCharacterState(state.SavedState, true)
 end
 
-local function startMobMount(model, savedState)
+-- Keeps the character lying face-up while tracking is ON. Selected-model mode
+-- retargets the exact same name; AutoFarm mode can retarget any live mob name.
+-- If no valid target exists, it holds the last position and keeps searching.
+local function startMobMount(model, savedState, autoFarmMode)
     if mountState then
         stopMount()
     end
@@ -1703,21 +1773,40 @@ local function startMobMount(model, savedState)
     local humanoid = savedState.Humanoid
     local root = savedState.Root
 
-    if not character.Parent or not humanoid.Parent or not root.Parent
-        or not isCachedModelUsable(model, "Mobs") then
+    if not character or not character.Parent
+        or not humanoid or not humanoid.Parent
+        or not root or not root.Parent then
         restoreCharacterState(savedState, true)
         return false
     end
 
+    local targetFolder = selectedTarget and selectedTarget.Folder or "Mobs"
+    local targetName = selectedTarget and selectedTarget.Name or (model and model.Name or "")
+    local usableModel = model and isCachedModelUsable(model, "Mobs") and model or nil
+    local initialTargetCFrame = usableModel and getMobUnderCFrame(usableModel) or nil
+    local initialHoldCFrame = initialTargetCFrame
+        and initialTargetCFrame * savedState.RootToPivot
+        or character:GetPivot()
+
     mountState = {
-        Model = model,
-        Name = model.Name,
+        Model = usableModel,
+        Folder = targetFolder,
+        Name = targetName,
+        AutoFarm = autoFarmMode == true,
         Character = character,
         Root = root,
         Humanoid = humanoid,
         RootToPivot = savedState.RootToPivot,
         SavedState = savedState,
+        HoldCFrame = initialHoldCFrame,
+        NextSearchAt = 0,
+        WasSearching = false,
     }
+
+    if selectedTarget and selectedTarget.Folder == targetFolder
+        and selectedTarget.Name == targetName then
+        selectedTarget.CurrentModel = usableModel
+    end
 
     mountConnection = RunService.RenderStepped:Connect(function()
         local state = mountState
@@ -1730,24 +1819,73 @@ local function startMobMount(model, savedState)
             return
         end
 
-        if not isCachedModelUsable(state.Model, "Mobs") then
-            local lostName = state.Name
-            teleportModeEnabled = false
-            stopMount()
-
-            if selectedTarget and selectedTarget.Folder == "Mobs"
-                and selectedTarget.Name == lostName then
-                selectedTarget.CurrentModel = nil
-                updateSelectedStatus()
+        -- The selected group can remain empty for a while. Do not dismount;
+        -- stay prone at the last position and retry at a low, controlled rate.
+        if not state.Model or not isCachedModelUsable(state.Model, "Mobs") then
+            if state.Model then
+                state.Model = nil
             end
 
-            feedbackLabel.Text = "MOB LOST - NEXT SAME-NAME MOB SELECTED"
-            return
+            if state.AutoFarm and autoFarmEnabled then
+                if os.clock() >= state.NextSearchAt then
+                    state.NextSearchAt = os.clock() + SETTINGS.MobSearchInterval
+                    local replacement = findNearestLiveMob(SETTINGS.AutoFarmRadius)
+                    if replacement then
+                        state.Model = replacement
+                        state.Name = replacement.Name
+                        farmCurrentTarget = replacement
+                        state.WasSearching = false
+                        feedbackLabel.Text = "AUTOFARM: FOLLOWING " .. string.upper(replacement.Name)
+                        updateSelectedStatus()
+                    end
+                end
+            else
+                local target = selectedTarget
+                if target and target.Folder == state.Folder and target.Name == state.Name then
+                    if target.CurrentModel and not isCachedModelUsable(target.CurrentModel, "Mobs") then
+                        target.CurrentModel = nil
+                    end
+
+                    if os.clock() >= state.NextSearchAt then
+                        state.NextSearchAt = os.clock() + SETTINGS.MobSearchInterval
+                        local replacement = resolveSelectedModel(target)
+                        if replacement and isCachedModelUsable(replacement, "Mobs") then
+                            state.Model = replacement
+                            state.WasSearching = false
+                            feedbackLabel.Text = "FOUND NEXT " .. string.upper(state.Name) .. " - FOLLOWING"
+                            updateSelectedStatus()
+                        end
+                    end
+                end
+            end
         end
 
-        local targetCFrame = getMobUnderCFrame(state.Model)
-        if targetCFrame then
-            state.Character:PivotTo(targetCFrame * state.RootToPivot)
+        if state.Model and isCachedModelUsable(state.Model, "Mobs") then
+            local targetCFrame = getMobUnderCFrame(state.Model)
+            if targetCFrame then
+                state.HoldCFrame = targetCFrame * state.RootToPivot
+                state.Character:PivotTo(state.HoldCFrame)
+                zeroCharacterVelocity(state.Character)
+                if state.WasSearching then
+                    state.WasSearching = false
+                    feedbackLabel.Text = state.AutoFarm
+                        and ("AUTOFARM: FOLLOWING " .. string.upper(state.Name))
+                        or ("FOLLOWING SELECTED " .. string.upper(state.Name))
+                end
+                return
+            end
+        end
+
+        if not state.WasSearching then
+            state.WasSearching = true
+            feedbackLabel.Text = state.AutoFarm
+                and "AUTOFARM: SEARCHING FOR NEARBY MOBS - STAYING PRONE"
+                or ("SEARCHING FOR " .. string.upper(state.Name) .. " - STAYING PRONE")
+            updateSelectedStatus()
+        end
+
+        if state.HoldCFrame then
+            state.Character:PivotTo(state.HoldCFrame)
             zeroCharacterVelocity(state.Character)
         end
     end)
@@ -1885,6 +2023,17 @@ end
 ------------------------------------------------------------------------
 
 updateSelectedStatus = function()
+    if autoFarmEnabled then
+        if farmCurrentTarget and isCachedModelUsable(farmCurrentTarget, "Mobs") then
+            modelStatus.Text = "AUTOFARMING: " .. string.upper(farmCurrentTarget.Name)
+        else
+            modelStatus.Text = "AUTOFARM: SEARCHING NEARBY MOBS"
+        end
+        teleportButton.Active = not teleporting
+        teleportButton.Text = teleporting and "MOVING..." or "AUTOFARM: ON"
+        return
+    end
+
     if not selectedTarget then
         selectedLabel.Text = "NONE"
         modelStatus.Text = "STATUS: NOT SELECTED"
@@ -1911,8 +2060,17 @@ updateSelectedStatus = function()
         else
             modelStatus.Text = "NO LIVING TARGET FOUND"
         end
-        teleportButton.Active = teleportModeEnabled
-        teleportButton.Text = teleportModeEnabled and "TELEPORT: ON" or "NO AVAILABLE TARGET"
+        local canSearchSelectedMob = target.Folder == "Mobs"
+            and mobTeleportEnabled
+            and backFollowEnabled
+        teleportButton.Active = teleportModeEnabled or canSearchSelectedMob
+        if teleportModeEnabled then
+            teleportButton.Text = "TELEPORT: ON"
+        elseif canSearchSelectedMob then
+            teleportButton.Text = "SEARCH SELECTED MOB"
+        else
+            teleportButton.Text = "NO AVAILABLE TARGET"
+        end
         return
     end
 
@@ -2024,7 +2182,8 @@ local function createDropdownRow(group, index)
             and selectedTarget.Folder == group.Folder
             and selectedTarget.Name == group.Name
 
-        if not sameGroup then
+        if not sameGroup and not autoFarmEnabled then
+            mobSearchToken = mobSearchToken + 1
             teleportModeEnabled = false
             if mountState then
                 stopMount()
@@ -2103,7 +2262,7 @@ end
 -- TELEPORT
 ------------------------------------------------------------------------
 
-local function smoothTeleport(target)
+local function smoothTeleport(target, autoFarmMode)
     if teleporting or not target then
         return
     end
@@ -2166,7 +2325,9 @@ local function smoothTeleport(target)
         startingPosition = destination
     end
 
-    lastReturnPivot = character:GetPivot()
+    if not lastReturnPivot then
+        lastReturnPivot = character:GetPivot()
+    end
     returnButton.Active = true
     teleportModeEnabled = true
 
@@ -2274,17 +2435,21 @@ local function smoothTeleport(target)
 
     teleporting = false
 
-    if not success then
+    if not success and not (isMob and backFollowEnabled and teleportModeEnabled) then
         teleportModeEnabled = false
     end
 
-    local shouldMount = success
-        and isMob
+    -- For mobs, keep the prone mount active even if the target vanished during
+    -- travel. The mount will search the selected same-name group and remain down.
+    local shouldMount = isMob
         and backFollowEnabled
-        and isCachedModelUsable(model, "Mobs")
+        and teleportModeEnabled
 
     if shouldMount then
-        startMobMount(model, savedState)
+        startMobMount(model, savedState, autoFarmMode)
+        if autoFarmMode then
+            farmCurrentTarget = model
+        end
     else
         restoreCharacterState(savedState, true)
     end
@@ -2295,7 +2460,9 @@ local function smoothTeleport(target)
         if isNPC then
             feedbackLabel.Text = "ARRIVED AT NPC WORLD PIVOT"
         elseif shouldMount then
-            feedbackLabel.Text = "LYING FACE-UP UNDER THE MOB"
+            feedbackLabel.Text = autoFarmMode
+                and ("AUTOFARM: FOLLOWING " .. string.upper(model.Name))
+                or "LYING FACE-UP UNDER THE MOB"
         else
             feedbackLabel.Text = "ARRIVED ABOVE " .. target.Name
         end
@@ -2312,6 +2479,150 @@ end
 -- BUTTON HANDLERS
 ------------------------------------------------------------------------
 
+local function startAutoFarmSearch()
+    autoFarmToken = autoFarmToken + 1
+    local myToken = autoFarmToken
+
+    task.spawn(function()
+        while not destroyed
+            and gui.Parent
+            and myToken == autoFarmToken
+            and autoFarmEnabled do
+
+            if not teleporting and not mountState then
+                local model = findNearestLiveMob(SETTINGS.AutoFarmRadius)
+                if model then
+                    farmCurrentTarget = model
+                    local target = {
+                        Folder = "Mobs",
+                        Name = model.Name,
+                        CurrentModel = model,
+                    }
+                    feedbackLabel.Text = "AUTOFARM: APPROACHING " .. string.upper(model.Name)
+                    smoothTeleport(target, true)
+                else
+                    farmCurrentTarget = nil
+                    feedbackLabel.Text = "AUTOFARM: SEARCHING WITHIN " .. tostring(SETTINGS.AutoFarmRadius) .. " STUDS"
+                    updateSelectedStatus()
+                end
+            end
+
+            task.wait(SETTINGS.AutoFarmSearchInterval)
+        end
+    end)
+end
+
+local function updateAutoFarmToggle()
+    autoFarmButton.Text = autoFarmEnabled and "ON" or "OFF"
+    autoFarmDescription.Text = autoFarmEnabled
+        and ("ALL MOB NAMES / " .. tostring(SETTINGS.AutoFarmRadius) .. " STUD RADIUS")
+        or "READY / ALL MOB NAMES"
+end
+
+local function setAutoFarmEnabled(enabled)
+    if teleporting then
+        feedbackLabel.Text = "WAIT UNTIL TELEPORT FINISHES"
+        return
+    end
+
+    enabled = enabled == true
+    if autoFarmEnabled == enabled then
+        return
+    end
+
+    if enabled then
+        local character = player.Character
+        if not character or not character.Parent then
+            feedbackLabel.Text = "CHARACTER NOT LOADED"
+            return
+        end
+
+        local humanoid = character:FindFirstChildOfClass("Humanoid")
+        if not humanoid or humanoid.Health <= 0 then
+            feedbackLabel.Text = "CHARACTER NOT READY"
+            return
+        end
+
+        if not lastReturnPivot then
+            lastReturnPivot = character:GetPivot()
+        end
+        returnButton.Active = true
+
+        -- AutoFarm takes control from any selected-name tracking session.
+        mobSearchToken = mobSearchToken + 1
+        if mountState then
+            stopMount()
+        end
+
+        mobTeleportEnabled = true
+        SETTINGS.MobTeleportEnabled = true
+        backFollowEnabled = true
+        SETTINGS.MobBackFollowEnabled = true
+        updateMobToggle()
+        updateBackFollowToggle()
+
+        if not autoClickEnabled then
+            setAutoClickEnabled(true)
+        end
+
+        autoFarmEnabled = true
+        teleportModeEnabled = true
+        feedbackLabel.Text = "AUTOFARM ON - TARGETING ALL NEARBY MOB NAMES"
+        updateAutoFarmToggle()
+        updateSelectedStatus()
+        startAutoFarmSearch()
+    else
+        autoFarmEnabled = false
+        autoFarmToken = autoFarmToken + 1
+        farmCurrentTarget = nil
+        teleportModeEnabled = false
+        if mountState then
+            stopMount()
+        end
+        feedbackLabel.Text = "AUTOFARM OFF - STOPPED FOLLOWING"
+        updateAutoFarmToggle()
+        updateSelectedStatus()
+    end
+end
+
+autoFarmButton.Activated:Connect(function()
+    setAutoFarmEnabled(not autoFarmEnabled)
+end)
+
+local function startSelectedMobSearch()
+    mobSearchToken = mobSearchToken + 1
+    local myToken = mobSearchToken
+
+    task.spawn(function()
+        while not destroyed
+            and gui.Parent
+            and myToken == mobSearchToken
+            and teleportModeEnabled do
+
+            local target = selectedTarget
+            if not target or target.Folder ~= "Mobs" then
+                break
+            end
+
+            if mobTeleportEnabled and backFollowEnabled and not teleporting and not mountState then
+                local model = resolveSelectedModel(target)
+                if model then
+                    smoothTeleport(target)
+                else
+                    feedbackLabel.Text = "SEARCHING FOR SELECTED MODEL: " .. string.upper(target.Name)
+                    updateSelectedStatus()
+                end
+            elseif not mobTeleportEnabled then
+                feedbackLabel.Text = "MOB TELEPORT DISABLED - SEARCH PAUSED"
+            elseif not backFollowEnabled then
+                feedbackLabel.Text = "ENABLE MOB UNDER FOLLOW TO STAY PRONE"
+            end
+
+            task.wait(SETTINGS.MobSearchInterval)
+        end
+    end)
+end
+
 teleportButton.Activated:Connect(function()
     if teleporting then
         feedbackLabel.Text = "WAIT UNTIL TELEPORT FINISHES"
@@ -2319,17 +2630,47 @@ teleportButton.Activated:Connect(function()
     end
 
     if teleportModeEnabled then
-        teleportModeEnabled = false
-        if mountState then
-            stopMount()
+        if autoFarmEnabled then
+            setAutoFarmEnabled(false)
+        else
+            teleportModeEnabled = false
+            mobSearchToken = mobSearchToken + 1
+            if mountState then
+                stopMount()
+            end
+            feedbackLabel.Text = "TELEPORT MODE DISABLED - STOOD UP"
+            updateSelectedStatus()
         end
-        feedbackLabel.Text = "TELEPORT MODE DISABLED"
-        updateSelectedStatus()
         return
     end
 
     if not selectedTarget then
         feedbackLabel.Text = "SELECT A MODEL FIRST"
+        return
+    end
+
+    if selectedTarget.Folder == "Mobs" then
+        if not mobTeleportEnabled then
+            feedbackLabel.Text = "TURN ON SMOOTH MOB TELEPORT FIRST"
+            updateSelectedStatus()
+            return
+        end
+        if not backFollowEnabled then
+            feedbackLabel.Text = "TURN ON MOB UNDER FOLLOW TO STAY PRONE"
+            updateSelectedStatus()
+            return
+        end
+        if not lastReturnPivot then
+            local character = player.Character
+            if character and character.Parent then
+                lastReturnPivot = character:GetPivot()
+                returnButton.Active = true
+            end
+        end
+        teleportModeEnabled = true
+        feedbackLabel.Text = "MOB MODE ON - SEARCHING FOR " .. string.upper(selectedTarget.Name)
+        updateSelectedStatus()
+        startSelectedMobSearch()
         return
     end
 
@@ -2354,6 +2695,11 @@ returnButton.Activated:Connect(function()
     end
 
     teleportModeEnabled = false
+    mobSearchToken = mobSearchToken + 1
+    autoFarmEnabled = false
+    autoFarmToken = autoFarmToken + 1
+    farmCurrentTarget = nil
+    updateAutoFarmToggle()
     if mountState then
         stopMount()
     end
@@ -2416,6 +2762,9 @@ mobToggleButton.Activated:Connect(function()
 
     mobTeleportEnabled = not mobTeleportEnabled
     SETTINGS.MobTeleportEnabled = mobTeleportEnabled
+    if not mobTeleportEnabled and autoFarmEnabled then
+        setAutoFarmEnabled(false)
+    end
     updateMobToggle()
     updateSelectedStatus()
 end)
@@ -2437,10 +2786,19 @@ backFollowButton.Activated:Connect(function()
     SETTINGS.MobBackFollowEnabled = backFollowEnabled
     updateBackFollowToggle()
 
-    if not backFollowEnabled and mountState then
-        teleportModeEnabled = false
-        stopMount()
-        feedbackLabel.Text = "DISMOUNTED"
+    if not backFollowEnabled then
+        if autoFarmEnabled then
+            setAutoFarmEnabled(false)
+        end
+        if mountState then
+            teleportModeEnabled = false
+            mobSearchToken = mobSearchToken + 1
+            stopMount()
+        elseif selectedTarget and selectedTarget.Folder == "Mobs" and teleportModeEnabled then
+            teleportModeEnabled = false
+            mobSearchToken = mobSearchToken + 1
+        end
+        feedbackLabel.Text = "UNDER FOLLOW DISABLED"
     else
         feedbackLabel.Text = backFollowEnabled
             and "UNDER FOLLOW ENABLED"
@@ -2466,6 +2824,10 @@ local function cleanup()
     autoClickEnabled = false
     SETTINGS.AutoClickEnabled = false
     teleportModeEnabled = false
+    mobSearchToken = mobSearchToken + 1
+    autoFarmEnabled = false
+    autoFarmToken = autoFarmToken + 1
+    farmCurrentTarget = nil
     lastReturnPivot = nil
     deactivateEquippedTool()
 
@@ -2503,6 +2865,11 @@ gui.Destroying:Connect(cleanup)
 
 connectGlobal(player.CharacterAdded, function()
     teleportModeEnabled = false
+    mobSearchToken = mobSearchToken + 1
+    autoFarmEnabled = false
+    autoFarmToken = autoFarmToken + 1
+    farmCurrentTarget = nil
+    updateAutoFarmToggle()
     lastReturnPivot = nil
     returnButton.Active = false
     if mountState then
@@ -2521,6 +2888,7 @@ updateMobToggle()
 updateESPToggle()
 updateAutoClickToggle()
 updateBackFollowToggle()
+updateAutoFarmToggle()
 updateWorkspaceStatus()
 updateSelectedStatus()
 
