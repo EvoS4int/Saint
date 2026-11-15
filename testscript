@@ -19,7 +19,7 @@ local SETTINGS = {
 
     MobTeleportEnabled = true,
     AutoNextMob = true,
-    MobHeadClearance = 5,
+    MobUnderDistance = 2,       -- studs below the bottom of the mob (bigger = lower)
     MobBackFollowEnabled = true,
 
     ESPEnabled = true,
@@ -619,7 +619,7 @@ local backFollowPanel = makePanel(
 local backFollowTitle = makeLabel(
     backFollowPanel,
     "BackFollowTitle",
-    "MOB HEAD FOLLOW",
+    "MOB UNDER FOLLOW",
     UDim2.fromOffset(220, 20),
     UDim2.fromOffset(10, 4),
     10
@@ -629,7 +629,7 @@ backFollowTitle.Font = Enum.Font.GothamBold
 local backFollowDescription = makeLabel(
     backFollowPanel,
     "BackFollowDescription",
-    "STAY 5 STUDS ABOVE MOB HEAD",
+    "STAY JUST UNDER THE MOB",
     UDim2.fromOffset(230, 17),
     UDim2.fromOffset(10, 26),
     8,
@@ -1214,20 +1214,26 @@ local function getMobForward(model)
     return forward.Unit
 end
 
-local function getMobTopCFrame(model)
+-- Position used while following a mob: directly UNDER it, lying face-up.
+-- Change SETTINGS.MobUnderDistance to move it closer / further below the mob.
+local function getMobUnderCFrame(model)
     if not model or not isCachedModelUsable(model, "Mobs") then
         return nil
     end
 
-    local head = model:FindFirstChild("Head", true)
-    local headPosition
+    local centerPosition
+    local halfHeight
 
-    if head and head:IsA("BasePart") then
-        headPosition = Vector3.new(
-            head.Position.X,
-            head.Position.Y + head.Size.Y / 2 + SETTINGS.MobHeadClearance,
-            head.Position.Z
-        )
+    if model:IsA("BasePart") then
+        local cf = model.CFrame
+        local size = model.Size
+
+        centerPosition = cf.Position
+        halfHeight = (
+            math.abs(cf.RightVector.Y) * size.X
+            + math.abs(cf.UpVector.Y) * size.Y
+            + math.abs(cf.LookVector.Y) * size.Z
+        ) / 2
     else
         local success, boxCFrame, boxSize = pcall(function()
             return model:GetBoundingBox()
@@ -1237,18 +1243,22 @@ local function getMobTopCFrame(model)
             return nil
         end
 
-        headPosition = Vector3.new(
-            boxCFrame.Position.X,
-            boxCFrame.Position.Y + boxSize.Y / 2 + SETTINGS.MobHeadClearance,
-            boxCFrame.Position.Z
-        )
+        centerPosition = boxCFrame.Position
+        halfHeight = boxSize.Y / 2
     end
+
+    local underPosition = Vector3.new(
+        centerPosition.X,
+        centerPosition.Y - halfHeight - SETTINGS.MobUnderDistance,
+        centerPosition.Z
+    )
 
     local mobForward = getMobForward(model)
 
+    -- Looking straight up = lying face-up, facing the mob above you
     return CFrame.lookAt(
-        headPosition,
-        headPosition + Vector3.new(0, 1, 0),
+        underPosition,
+        underPosition + Vector3.new(0, 1, 0),
         mobForward
     )
 end
@@ -1489,13 +1499,62 @@ end
 local function updateBackFollowToggle()
     backFollowButton.Text = backFollowEnabled and "ON" or "OFF"
     backFollowDescription.Text = backFollowEnabled
-        and "STAY 5 STUDS ABOVE MOB HEAD"
-        or "HEAD FOLLOW DISABLED"
+        and "STAY JUST UNDER THE MOB"
+        or "UNDER FOLLOW DISABLED"
 end
 
 ------------------------------------------------------------------------
 -- CHARACTER STATE / MOUNT / TWEEN
 ------------------------------------------------------------------------
+
+-- The character is NOT anchored while it is moved. Anchored parts do not send
+-- their CFrame changes to the server, so mobs would still think you are
+-- standing where you started and would never react. Instead the character is
+-- kept un-anchored, its velocity is zeroed every frame (no falling) and its
+-- parts are made non-colliding (so it can sit inside the ground / the mob).
+local noclipConnection = nil
+local noclipOriginal = {}
+
+local function stopNoclip()
+    if noclipConnection then
+        noclipConnection:Disconnect()
+        noclipConnection = nil
+    end
+
+    for part, original in pairs(noclipOriginal) do
+        if part.Parent then
+            part.CanCollide = original
+        end
+    end
+
+    noclipOriginal = {}
+end
+
+local function startNoclip(character)
+    stopNoclip()
+
+    for _, object in ipairs(character:GetDescendants()) do
+        if object:IsA("BasePart") then
+            noclipOriginal[object] = object.CanCollide
+        end
+    end
+
+    noclipConnection = RunService.Stepped:Connect(function()
+        for part in pairs(noclipOriginal) do
+            if part.Parent then
+                part.CanCollide = false
+            end
+        end
+    end)
+end
+
+local function zeroCharacterVelocity(character)
+    local root = character and character:FindFirstChild("HumanoidRootPart")
+    if root then
+        root.AssemblyLinearVelocity = Vector3.zero
+        root.AssemblyAngularVelocity = Vector3.zero
+    end
+end
 
 local function captureCharacterState(character, humanoid, root)
     local animateScript = character:FindFirstChild("Animate")
@@ -1541,7 +1600,7 @@ local function captureCharacterState(character, humanoid, root)
 
     root.AssemblyLinearVelocity = Vector3.zero
     root.AssemblyAngularVelocity = Vector3.zero
-    root.Anchored = true
+    startNoclip(character)
 
     return saved
 end
@@ -1550,6 +1609,8 @@ local function restoreCharacterState(saved, standUp)
     if not saved then
         return
     end
+
+    stopNoclip()
 
     local root = saved.Root
     local humanoid = saved.Humanoid
@@ -1672,9 +1733,10 @@ local function startMobMount(model, savedState)
             return
         end
 
-        local targetCFrame = getMobTopCFrame(state.Model)
+        local targetCFrame = getMobUnderCFrame(state.Model)
         if targetCFrame then
             state.Character:PivotTo(targetCFrame * state.RootToPivot)
+            zeroCharacterVelocity(state.Character)
         end
     end)
 
@@ -1697,6 +1759,7 @@ local function playCharacterTween(
     local pivotConnection = driver:GetPropertyChangedSignal("Value"):Connect(function()
         if character.Parent then
             character:PivotTo(driver.Value)
+            zeroCharacterVelocity(character)
         end
     end)
 
@@ -1756,6 +1819,55 @@ local function playCharacterTween(
     end
 end
 
+-- Moves you (by CFrame, no walking) toward the spot under the mob while the mob
+-- keeps moving. The target is re-read every frame, so you slide to where the
+-- mob is NOW and never snap when you arrive. Speed = SETTINGS.TeleportSpeed.
+local function chaseMobUnder(character, rootToPivot, model, startRootCFrame)
+    local rootCFrame = startRootCFrame
+    local startedAt = os.clock()
+
+    while true do
+        local dt = RunService.Heartbeat:Wait()
+
+        if destroyed or not gui.Parent or not character.Parent then
+            error("MOVEMENT INTERRUPTED OR TARGET REMOVED")
+        end
+
+        if not isCachedModelUsable(model, "Mobs") then
+            error("MOB DIED DURING TRAVEL")
+        end
+
+        local targetRoot = getMobUnderCFrame(model)
+        if not targetRoot then
+            error("CANNOT FIND MOB POSITION")
+        end
+
+        local offset = targetRoot.Position - rootCFrame.Position
+        local distance = offset.Magnitude
+        local step = SETTINGS.TeleportSpeed * dt
+
+        if distance <= step + 0.05 then
+            character:PivotTo(targetRoot * rootToPivot)
+            zeroCharacterVelocity(character)
+            return
+        end
+
+        if os.clock() - startedAt > SETTINGS.MaxDuration then
+            error("COULD NOT CATCH MOB - RAISE TRAVEL SPEED")
+        end
+
+        local newPosition = rootCFrame.Position + offset.Unit * step
+        local newRotation = rootCFrame.Rotation:Lerp(
+            targetRoot.Rotation,
+            math.min(1, dt * 8)
+        )
+
+        rootCFrame = CFrame.new(newPosition) * newRotation
+        character:PivotTo(rootCFrame * rootToPivot)
+        zeroCharacterVelocity(character)
+    end
+end
+
 ------------------------------------------------------------------------
 -- STATUS / DROPDOWN / SEARCH
 ------------------------------------------------------------------------
@@ -1793,7 +1905,7 @@ updateSelectedStatus = function()
     end
 
     if mountState and mountState.Model == model then
-        modelStatus.Text = "LYING FACE-UP ABOVE MOB HEAD"
+        modelStatus.Text = "LYING FACE-UP UNDER THE MOB"
         teleportButton.Active = false
         teleportButton.Text = "MOUNTED"
         return
@@ -2005,9 +2117,9 @@ local function smoothTeleport(target)
     if isNPC then
         destination = SETTINGS.NPCWorldPivot
     elseif isMob then
-        destination = getMobTopCFrame(model)
+        destination = getMobUnderCFrame(model)
         if not destination then
-            feedbackLabel.Text = "CANNOT FIND MOB HEAD"
+            feedbackLabel.Text = "CANNOT FIND MOB POSITION"
             return
         end
     else
@@ -2052,7 +2164,7 @@ local function smoothTeleport(target)
                 mobForward
             )
 
-            feedbackLabel.Text = "MOVING FACE-UP ABOVE MOB HEAD..."
+            feedbackLabel.Text = "MOVING FACE-UP UNDER THE MOB..."
 
             playCharacterTween(
                 character,
@@ -2062,24 +2174,9 @@ local function smoothTeleport(target)
                 Enum.EasingStyle.Sine
             )
 
-            playCharacterTween(
-                character,
-                destination,
-                rootToPivot,
-                travelDuration,
-                Enum.EasingStyle.Linear,
-                model,
-                "Mobs"
-            )
+            feedbackLabel.Text = "MOVING UNDER THE MOB..."
 
-            if not isCachedModelUsable(model, "Mobs") then
-                error("MOB DIED DURING TRAVEL")
-            end
-
-            local updatedTop = getMobTopCFrame(model)
-            if updatedTop then
-                destination = updatedTop
-            end
+            chaseMobUnder(character, rootToPivot, model, proneStart)
         elseif isNPC then
             local npcStart = destination
                 * CFrame.new(0, -SETTINGS.NPCBelowDistance, 0)
@@ -2162,7 +2259,7 @@ local function smoothTeleport(target)
         if isNPC then
             feedbackLabel.Text = "ARRIVED AT NPC WORLD PIVOT"
         elseif shouldMount then
-            feedbackLabel.Text = "LYING FACE-UP 5 STUDS ABOVE MOB HEAD"
+            feedbackLabel.Text = "LYING FACE-UP UNDER THE MOB"
         else
             feedbackLabel.Text = "ARRIVED ABOVE " .. target.Name
         end
@@ -2255,8 +2352,8 @@ backFollowButton.Activated:Connect(function()
         feedbackLabel.Text = "DISMOUNTED"
     else
         feedbackLabel.Text = backFollowEnabled
-            and "HEAD FOLLOW ENABLED"
-            or "HEAD FOLLOW DISABLED"
+            and "UNDER FOLLOW ENABLED"
+            or "UNDER FOLLOW DISABLED"
     end
 
     updateSelectedStatus()
@@ -2296,6 +2393,7 @@ local function cleanup()
     end
 
     clearESP()
+    stopNoclip()
 
     for _, connection in ipairs(globalConnections) do
         connection:Disconnect()
