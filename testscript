@@ -1,0 +1,1784 @@
+
+local Players = game:GetService("Players")
+local TweenService = game:GetService("TweenService")
+local UserInputService = game:GetService("UserInputService")
+
+local player = Players.LocalPlayer
+local playerGui = player:WaitForChild("PlayerGui")
+
+local SETTINGS = {
+    GUIWidth = 700,
+    GUIHeight = 490,
+
+    TeleportSpeed = 14,
+    MinTravelSpeed = 1,
+    MaxTravelSpeed = 100,
+    MinDuration = 0.5,
+    MaxDuration = 60,
+
+    MobTeleportEnabled = true,
+    MobBelowDistance = 5,
+    AutoNextMob = true,
+
+    ESPEnabled = true,
+    ESPRadius = 150,
+    ESPRefreshRate = 0.75,
+    MaxESPHighlights = 30,
+
+    NPCWorldPivot = CFrame.new(
+        869.860535,
+        20.5000019,
+        -352.986267,
+        1, 0, 0,
+        0, 1, 0,
+        0, 0, 1
+    ),
+
+    NPCBelowDistance = 10,
+    NPCRiseDuration = 3.5,
+
+    LayDuration = 0.35,
+    StandDuration = 0.45,
+
+    AutoClickEnabled = true,
+    AutoClickInterval = 0.2,
+
+    CacheRefreshRate = 1.25,
+}
+
+local COLORS = {
+    Background = Color3.fromRGB(5, 5, 5),
+    Header = Color3.fromRGB(12, 12, 12),
+    Panel = Color3.fromRGB(10, 10, 10),
+    Element = Color3.fromRGB(18, 18, 18),
+
+    White = Color3.fromRGB(255, 255, 255),
+    Gray = Color3.fromRGB(175, 175, 175),
+    DarkGray = Color3.fromRGB(35, 35, 35),
+}
+
+local selectedTarget = nil
+local teleporting = false
+local activeTween = nil
+
+local mobTeleportEnabled = SETTINGS.MobTeleportEnabled
+local espEnabled = SETTINGS.ESPEnabled
+local autoClickEnabled = SETTINGS.AutoClickEnabled
+
+local espHighlights = {}
+local dropdownRows = {}
+
+local destroyed = false
+
+local LAY_ROTATION = CFrame.Angles(math.rad(90), 0, 0)
+
+local oldGui = playerGui:FindFirstChild("MobsSearchGui")
+
+if oldGui then
+    oldGui:Destroy()
+end
+
+local function create(className, properties, parent)
+    local object = Instance.new(className)
+
+    for property, value in pairs(properties) do
+        object[property] = value
+    end
+
+    object.Parent = parent
+    return object
+end
+
+local function addCorner(parent, radius)
+    create("UICorner", {
+        CornerRadius = UDim.new(0, radius)
+    }, parent)
+end
+
+local function addStroke(parent, transparency, thickness)
+    create("UIStroke", {
+        Color = COLORS.White,
+        Transparency = transparency or 0.3,
+        Thickness = thickness or 1,
+        ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
+    }, parent)
+end
+
+local function makeLabel(parent, name, text, size, position, textSize, muted)
+    return create("TextLabel", {
+        Name = name,
+        Size = size,
+        Position = position,
+        BackgroundTransparency = 1,
+        Text = text,
+        TextColor3 = muted and COLORS.Gray or COLORS.White,
+        TextSize = textSize or 11,
+        Font = Enum.Font.GothamMedium,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        TextYAlignment = Enum.TextYAlignment.Center,
+        TextTruncate = Enum.TextTruncate.AtEnd,
+    }, parent)
+end
+
+local function makeButton(parent, name, text, size, position)
+    local button = create("TextButton", {
+        Name = name,
+        Size = size,
+        Position = position,
+        BackgroundColor3 = COLORS.Element,
+        BorderSizePixel = 0,
+        Text = text,
+        TextColor3 = COLORS.White,
+        TextSize = 10,
+        Font = Enum.Font.GothamBold,
+        AutoButtonColor = true,
+    }, parent)
+
+    addCorner(button, 6)
+    addStroke(button, 0.35, 1)
+
+    return button
+end
+
+local function makePanel(parent, name, size, position)
+    local panel = create("Frame", {
+        Name = name,
+        Size = size,
+        Position = position,
+        BackgroundColor3 = COLORS.Panel,
+        BorderSizePixel = 0,
+    }, parent)
+
+    addCorner(panel, 7)
+    addStroke(panel, 0.45, 1)
+
+    return panel
+end
+
+local gui = create("ScreenGui", {
+    Name = "MobsSearchGui",
+    ResetOnSpawn = false,
+    IgnoreGuiInset = true,
+    ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
+}, playerGui)
+
+local main = create("Frame", {
+    Name = "Main",
+    Size = UDim2.fromOffset(SETTINGS.GUIWidth, SETTINGS.GUIHeight),
+    Position = UDim2.fromScale(0.5, 0.5),
+    AnchorPoint = Vector2.new(0.5, 0.5),
+    BackgroundColor3 = COLORS.Background,
+    BorderSizePixel = 0,
+    Active = true,
+    ClipsDescendants = false,
+}, gui)
+
+addCorner(main, 10)
+addStroke(main, 0.1, 1.5)
+
+local header = create("Frame", {
+    Name = "Header",
+    Size = UDim2.new(1, 0, 0, 44),
+    BackgroundColor3 = COLORS.Header,
+    BorderSizePixel = 0,
+    Active = true,
+}, main)
+
+addCorner(header, 10)
+
+local title = makeLabel(
+    header,
+    "Title",
+    "MOBS SEARCH",
+    UDim2.fromOffset(180, 44),
+    UDim2.fromOffset(15, 0),
+    14
+)
+
+title.Font = Enum.Font.GothamBold
+
+local subtitle = makeLabel(
+    header,
+    "Subtitle",
+    "OPTIMIZED / ESP",
+    UDim2.fromOffset(150, 44),
+    UDim2.fromOffset(180, 0),
+    9,
+    true
+)
+
+local destroyButton = makeButton(
+    header,
+    "DestroyButton",
+    "DESTROY UI",
+    UDim2.fromOffset(90, 27),
+    UDim2.new(1, -104, 0.5, -13)
+)
+
+local dragHandle = create("TextButton", {
+    Name = "DragHandle",
+    Size = UDim2.new(1, -110, 1, 0),
+    Position = UDim2.fromOffset(0, 0),
+    BackgroundTransparency = 1,
+    BorderSizePixel = 0,
+    Text = "",
+    AutoButtonColor = false,
+    Active = true,
+    ZIndex = 5,
+}, header)
+
+local dragging = false
+local dragInput = nil
+local dragStart = nil
+local startPosition = nil
+
+dragHandle.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1
+        or input.UserInputType == Enum.UserInputType.Touch then
+
+        dragging = true
+        dragStart = input.Position
+        startPosition = main.Position
+
+        if input.UserInputType == Enum.UserInputType.Touch then
+            dragInput = input
+        end
+    end
+end)
+
+UserInputService.InputChanged:Connect(function(input)
+    if not dragging then
+        return
+    end
+
+    local mouseMovement =
+        input.UserInputType == Enum.UserInputType.MouseMovement
+
+    local touchMovement = input == dragInput
+
+    if mouseMovement or touchMovement then
+        local delta = input.Position - dragStart
+
+        main.Position = UDim2.new(
+            startPosition.X.Scale,
+            startPosition.X.Offset + delta.X,
+            startPosition.Y.Scale,
+            startPosition.Y.Offset + delta.Y
+        )
+    end
+end)
+
+UserInputService.InputEnded:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1
+        or input == dragInput then
+
+        dragging = false
+        dragInput = nil
+    end
+end)
+
+local left = create("Frame", {
+    Name = "LeftPanel",
+    Size = UDim2.fromOffset(320, 380),
+    Position = UDim2.fromOffset(14, 54),
+    BackgroundTransparency = 1,
+}, main)
+
+makeLabel(
+    left,
+    "SearchTitle",
+    "MODEL FINDER",
+    UDim2.new(1, 0, 0, 17),
+    UDim2.fromOffset(0, 0),
+    10,
+    true
+)
+
+local searchBox = create("TextBox", {
+    Name = "SearchBox",
+    Size = UDim2.fromOffset(230, 32),
+    Position = UDim2.fromOffset(0, 22),
+    BackgroundColor3 = COLORS.Element,
+    BorderSizePixel = 0,
+    PlaceholderText = "Search mob or NPC...",
+    PlaceholderColor3 = COLORS.Gray,
+    Text = "",
+    TextColor3 = COLORS.White,
+    TextSize = 11,
+    Font = Enum.Font.Gotham,
+    ClearTextOnFocus = false,
+    TextXAlignment = Enum.TextXAlignment.Left,
+}, left)
+
+addCorner(searchBox, 6)
+addStroke(searchBox, 0.35, 1)
+
+create("UIPadding", {
+    PaddingLeft = UDim.new(0, 10),
+}, searchBox)
+
+local searchButton = makeButton(
+    left,
+    "SearchButton",
+    "SEARCH",
+    UDim2.fromOffset(82, 32),
+    UDim2.fromOffset(238, 22)
+)
+
+local countLabel = makeLabel(
+    left,
+    "CountLabel",
+    "FOUND 0 MOB GROUPS",
+    UDim2.new(1, 0, 0, 16),
+    UDim2.fromOffset(0, 58),
+    9,
+    true
+)
+
+makeLabel(
+    left,
+    "DropdownTitle",
+    "MODEL LIST / GROUPED BY NAME",
+    UDim2.new(1, 0, 0, 17),
+    UDim2.fromOffset(0, 79),
+    9,
+    true
+)
+
+local dropdownButton = makeButton(
+    left,
+    "DropdownButton",
+    "SELECT A MODEL                 ▼",
+    UDim2.new(1, 0, 0, 31),
+    UDim2.fromOffset(0, 98)
+)
+
+dropdownButton.TextXAlignment = Enum.TextXAlignment.Left
+
+create("UIPadding", {
+    PaddingLeft = UDim.new(0, 10),
+}, dropdownButton)
+
+local dropdownList = create("ScrollingFrame", {
+    Name = "DropdownList",
+    Size = UDim2.new(1, 0, 0, 90),
+    Position = UDim2.fromOffset(0, 133),
+    BackgroundColor3 = COLORS.Panel,
+    BorderSizePixel = 0,
+    ScrollBarThickness = 4,
+    ScrollBarImageColor3 = COLORS.White,
+    AutomaticCanvasSize = Enum.AutomaticSize.Y,
+    CanvasSize = UDim2.new(0, 0, 0, 0),
+    Visible = false,
+    ZIndex = 20,
+}, left)
+
+addCorner(dropdownList, 7)
+addStroke(dropdownList, 0.25, 1)
+
+create("UIListLayout", {
+    Padding = UDim.new(0, 4),
+    SortOrder = Enum.SortOrder.LayoutOrder,
+}, dropdownList)
+
+create("UIPadding", {
+    PaddingTop = UDim.new(0, 6),
+    PaddingBottom = UDim.new(0, 6),
+    PaddingLeft = UDim.new(0, 6),
+    PaddingRight = UDim.new(0, 6),
+}, dropdownList)
+
+local selectedPanel = makePanel(
+    left,
+    "SelectedPanel",
+    UDim2.new(1, 0, 0, 67),
+    UDim2.fromOffset(0, 229)
+)
+
+makeLabel(
+    selectedPanel,
+    "SelectedHeading",
+    "SELECTED TARGET GROUP",
+    UDim2.new(1, -18, 0, 17),
+    UDim2.fromOffset(9, 4),
+    9,
+    true
+)
+
+local selectedLabel = makeLabel(
+    selectedPanel,
+    "SelectedName",
+    "NONE",
+    UDim2.new(1, -18, 0, 19),
+    UDim2.fromOffset(9, 21),
+    11
+)
+
+selectedLabel.Font = Enum.Font.GothamBold
+
+local modelStatus = makeLabel(
+    selectedPanel,
+    "ModelStatus",
+    "STATUS: NOT SELECTED",
+    UDim2.new(1, -18, 0, 17),
+    UDim2.fromOffset(9, 43),
+    9,
+    true
+)
+
+local right = create("Frame", {
+    Name = "RightPanel",
+    Size = UDim2.fromOffset(336, 390),
+    Position = UDim2.fromOffset(350, 54),
+    BackgroundTransparency = 1,
+}, main)
+
+makeLabel(
+    right,
+    "SettingsTitle",
+    "TELEPORT / ESP SETTINGS",
+    UDim2.new(1, 0, 0, 17),
+    UDim2.fromOffset(0, 0),
+    10,
+    true
+)
+
+local mobTogglePanel = makePanel(
+    right,
+    "MobTogglePanel",
+    UDim2.new(1, 0, 0, 49),
+    UDim2.fromOffset(0, 22)
+)
+
+local toggleLabel = makeLabel(
+    mobTogglePanel,
+    "ToggleLabel",
+    "SMOOTH MOB TELEPORT",
+    UDim2.fromOffset(210, 20),
+    UDim2.fromOffset(10, 4),
+    10
+)
+
+toggleLabel.Font = Enum.Font.GothamBold
+
+local toggleDescription = makeLabel(
+    mobTogglePanel,
+    "ToggleDescription",
+    "AUTO NEXT SAME-NAME MOB: ON",
+    UDim2.fromOffset(220, 17),
+    UDim2.fromOffset(10, 26),
+    8,
+    true
+)
+
+local mobToggleButton = makeButton(
+    mobTogglePanel,
+    "MobToggleButton",
+    "ON",
+    UDim2.fromOffset(65, 29),
+    UDim2.new(1, -77, 0.5, -14)
+)
+
+local espPanel = makePanel(
+    right,
+    "ESPPanel",
+    UDim2.new(1, 0, 0, 49),
+    UDim2.fromOffset(0, 76)
+)
+
+local espLabel = makeLabel(
+    espPanel,
+    "ESPLabel",
+    "NEARBY MOB ESP",
+    UDim2.fromOffset(210, 20),
+    UDim2.fromOffset(10, 4),
+    10
+)
+
+espLabel.Font = Enum.Font.GothamBold
+
+local espDescription = makeLabel(
+    espPanel,
+    "ESPDescription",
+    "OUTLINE ONLY / OCCLUDED",
+    UDim2.fromOffset(220, 17),
+    UDim2.fromOffset(10, 26),
+    8,
+    true
+)
+
+local espToggleButton = makeButton(
+    espPanel,
+    "ESPToggleButton",
+    "ON",
+    UDim2.fromOffset(65, 29),
+    UDim2.new(1, -77, 0.5, -14)
+)
+
+local speedPanel = makePanel(
+    right,
+    "SpeedPanel",
+    UDim2.new(1, 0, 0, 49),
+    UDim2.fromOffset(0, 130)
+)
+
+local speedTitle = makeLabel(
+    speedPanel,
+    "SpeedTitle",
+    "TELEPORT TRAVEL SPEED",
+    UDim2.fromOffset(180, 20),
+    UDim2.fromOffset(10, 4),
+    10
+)
+
+speedTitle.Font = Enum.Font.GothamBold
+
+makeLabel(
+    speedPanel,
+    "SpeedDescription",
+    "1 - 100 STUDS / SECOND",
+    UDim2.fromOffset(190, 17),
+    UDim2.fromOffset(10, 26),
+    8,
+    true
+)
+
+local speedBox = create("TextBox", {
+    Name = "SpeedBox",
+    Size = UDim2.fromOffset(60, 29),
+    Position = UDim2.new(1, -137, 0.5, -14),
+    BackgroundColor3 = COLORS.Element,
+    BorderSizePixel = 0,
+    Text = tostring(SETTINGS.TeleportSpeed),
+    PlaceholderText = "Speed",
+    TextColor3 = COLORS.White,
+    PlaceholderColor3 = COLORS.Gray,
+    TextSize = 11,
+    Font = Enum.Font.GothamBold,
+    ClearTextOnFocus = false,
+}, speedPanel)
+
+addCorner(speedBox, 5)
+addStroke(speedBox, 0.3, 1)
+
+local applySpeedButton = makeButton(
+    speedPanel,
+    "ApplySpeedButton",
+    "APPLY",
+    UDim2.fromOffset(62, 29),
+    UDim2.new(1, -68, 0.5, -14)
+)
+
+local autoClickPanel = makePanel(
+    right,
+    "AutoClickPanel",
+    UDim2.new(1, 0, 0, 49),
+    UDim2.fromOffset(0, 184)
+)
+
+local autoClickTitle = makeLabel(
+    autoClickPanel,
+    "AutoClickTitle",
+    "EQUIPPED TOOL AUTO CLICK",
+    UDim2.fromOffset(220, 20),
+    UDim2.fromOffset(10, 4),
+    10
+)
+
+autoClickTitle.Font = Enum.Font.GothamBold
+
+local autoClickDescription = makeLabel(
+    autoClickPanel,
+    "AutoClickDescription",
+    "TOOL ACTIVATE / NO MOUSE INPUT",
+    UDim2.fromOffset(220, 17),
+    UDim2.fromOffset(10, 26),
+    8,
+    true
+)
+
+local autoClickButton = makeButton(
+    autoClickPanel,
+    "AutoClickButton",
+    "ON",
+    UDim2.fromOffset(65, 29),
+    UDim2.new(1, -77, 0.5, -14)
+)
+
+local workspaceTitle = makeLabel(
+    right,
+    "WorkspaceTitle",
+    "WORKSPACE STATUS",
+    UDim2.new(1, 0, 0, 17),
+    UDim2.fromOffset(0, 240),
+    10,
+    true
+)
+
+local folderPanel = makePanel(
+    right,
+    "FolderPanel",
+    UDim2.new(1, 0, 0, 86),
+    UDim2.fromOffset(0, 261)
+)
+
+local function createFolderStatus(name, x, y, width)
+    return makeLabel(
+        folderPanel,
+        name,
+        name .. ": CHECKING",
+        UDim2.fromOffset(width, 28),
+        UDim2.fromOffset(x, y),
+        9
+    )
+end
+
+local mobsStatus = createFolderStatus("Mobs", 10, 5, 145)
+local npcsStatus = createFolderStatus("NPCs", 180, 5, 145)
+
+local chestSpawnsStatus = createFolderStatus(
+    "ChestSpawns", 10, 48, 160
+)
+
+local chestsStatus = createFolderStatus(
+    "Chests", 180, 48, 145
+)
+
+local teleportButton = makeButton(
+    right,
+    "TeleportButton",
+    "TELEPORT TO SELECTED MOB",
+    UDim2.new(1, 0, 0, 38),
+    UDim2.fromOffset(0, 354)
+)
+
+teleportButton.Active = false
+
+local feedbackLabel = makeLabel(
+    right,
+    "Feedback",
+    "Select a mob group to begin.",
+    UDim2.new(1, 0, 0, 23),
+    UDim2.fromOffset(0, 396),
+    9,
+    true
+)
+
+feedbackLabel.TextXAlignment = Enum.TextXAlignment.Center
+
+local function getFolder(name)
+    local folder = workspace:FindFirstChild(name)
+
+    if folder and folder:IsA("Folder") then
+        return folder
+    end
+
+    return nil
+end
+
+local function checkFolder(name, label)
+    label.Text = name .. (
+        getFolder(name) and ": AVAILABLE" or ": MISSING"
+    )
+end
+
+local function updateWorkspaceStatus()
+    checkFolder("Mobs", mobsStatus)
+    checkFolder("NPCs", npcsStatus)
+    checkFolder("ChestSpawns", chestSpawnsStatus)
+    checkFolder("Chests", chestsStatus)
+end
+
+local function getTeleportPart(model)
+    if not model or not model:IsA("Model") then
+        return nil
+    end
+
+    if model.PrimaryPart and model.PrimaryPart:IsA("BasePart") then
+        return model.PrimaryPart
+    end
+
+    return model:FindFirstChildWhichIsA("BasePart", true)
+end
+
+local function getHumanoid(model)
+    if not model then
+        return nil
+    end
+
+    return model:FindFirstChildWhichIsA("Humanoid", true)
+end
+
+local function isAlive(model, humanoid)
+    if not model or not model.Parent then
+        return false
+    end
+
+    if humanoid and humanoid.Parent and humanoid.Health <= 0 then
+        return false
+    end
+
+    return true
+end
+
+local modelCache = {
+    ModelsByFolder = {
+        Mobs = {},
+        NPCs = {},
+    },
+
+    ByName = {
+        Mobs = {},
+        NPCs = {},
+    },
+
+    Counts = {
+        Mobs = {},
+        NPCs = {},
+    },
+
+    Parts = {},
+    Humanoids = {},
+    Groups = {},
+}
+
+local function getTopLevelModels(folder)
+    if not folder then
+        return {}
+    end
+
+    local results = {}
+
+    for _, object in ipairs(folder:GetDescendants()) do
+        if object:IsA("Model") then
+            local ancestor = object.Parent
+            local nested = false
+
+            while ancestor and ancestor ~= folder do
+                if ancestor:IsA("Model") then
+                    nested = true
+                    break
+                end
+
+                ancestor = ancestor.Parent
+            end
+
+            if not nested then
+                table.insert(results, object)
+            end
+        end
+    end
+
+    return results
+end
+
+local function refreshModelCache()
+    local newCache = {
+        ModelsByFolder = {
+            Mobs = {},
+            NPCs = {},
+        },
+
+        ByName = {
+            Mobs = {},
+            NPCs = {},
+        },
+
+        Counts = {
+            Mobs = {},
+            NPCs = {},
+        },
+
+        Parts = {},
+        Humanoids = {},
+        Groups = {},
+    }
+
+    for _, folderName in ipairs({"Mobs", "NPCs"}) do
+        local folder = getFolder(folderName)
+
+        if folder then
+            local models = getTopLevelModels(folder)
+
+            newCache.ModelsByFolder[folderName] = models
+
+            for _, model in ipairs(models) do
+                local name = model.Name
+
+                local part = getTeleportPart(model)
+                local humanoid = getHumanoid(model)
+
+                newCache.Parts[model] = part
+                newCache.Humanoids[model] = humanoid
+
+                local group = newCache.ByName[folderName][name]
+
+                if not group then
+                    group = {}
+                    newCache.ByName[folderName][name] = group
+                end
+
+                table.insert(group, model)
+
+                if part and isAlive(model, humanoid) then
+                    newCache.Counts[folderName][name] =
+                        (newCache.Counts[folderName][name] or 0) + 1
+                end
+            end
+
+            for name in pairs(newCache.ByName[folderName]) do
+                table.insert(newCache.Groups, {
+                    Folder = folderName,
+                    Name = name,
+                })
+            end
+        end
+    end
+
+    table.sort(newCache.Groups, function(a, b)
+        local nameA = a.Name:lower()
+        local nameB = b.Name:lower()
+
+        if nameA == nameB then
+            return a.Folder < b.Folder
+        end
+
+        return nameA < nameB
+    end)
+
+    modelCache = newCache
+end
+
+local function isCachedModelUsable(model, folderName)
+    if not model then
+        return false
+    end
+
+    local folder = getFolder(folderName)
+
+    if not folder or not model:IsDescendantOf(folder) then
+        return false
+    end
+
+    local part = modelCache.Parts[model]
+
+    if not part or not part:IsDescendantOf(model) then
+        part = getTeleportPart(model)
+        modelCache.Parts[model] = part
+    end
+
+    if not part then
+        return false
+    end
+
+    local humanoid = modelCache.Humanoids[model]
+
+    if not humanoid or not humanoid.Parent then
+        humanoid = getHumanoid(model)
+        modelCache.Humanoids[model] = humanoid
+    end
+
+    return isAlive(model, humanoid)
+end
+
+local function getGroupModels(folderName, modelName)
+    local candidates =
+        modelCache.ByName[folderName]
+        and modelCache.ByName[folderName][modelName]
+
+    if not candidates then
+        return {}
+    end
+
+    local results = {}
+
+    for _, model in ipairs(candidates) do
+        if isCachedModelUsable(model, folderName) then
+            table.insert(results, model)
+        end
+    end
+
+    return results
+end
+
+local function countAvailable(folderName, modelName)
+    local count = 0
+
+    for _, model in ipairs(
+        modelCache.ByName[folderName]
+        and modelCache.ByName[folderName][modelName]
+        or {}
+    ) do
+        if isCachedModelUsable(model, folderName) then
+            count += 1
+        end
+    end
+
+    return count
+end
+
+local function getModelPosition(model)
+    local part = modelCache.Parts[model]
+
+    if part and part.Parent then
+        return part.Position
+    end
+
+    part = getTeleportPart(model)
+
+    if part then
+        modelCache.Parts[model] = part
+        return part.Position
+    end
+
+    return model:GetPivot().Position
+end
+
+local function findNearestLiveModel(folderName, modelName)
+    local models = getGroupModels(folderName, modelName)
+
+    if #models == 0 then
+        return nil
+    end
+
+    local character = player.Character
+    local root = character and character:FindFirstChild("HumanoidRootPart")
+
+    local origin = root and root.Position or Vector3.zero
+
+    local closestModel = nil
+    local closestDistance = math.huge
+
+    for _, model in ipairs(models) do
+        local distance = (
+            getModelPosition(model) - origin
+        ).Magnitude
+
+        if distance < closestDistance then
+            closestDistance = distance
+            closestModel = model
+        end
+    end
+
+    return closestModel
+end
+
+local function getTargetGroups()
+    return modelCache.Groups
+end
+
+local function resolveSelectedModel(target)
+    if not target then
+        return nil
+    end
+
+    local current = target.CurrentModel
+
+    if current and isCachedModelUsable(current, target.Folder) then
+        return current
+    end
+
+    target.CurrentModel = nil
+
+    if target.Folder == "Mobs" and SETTINGS.AutoNextMob then
+        target.CurrentModel = findNearestLiveModel(
+            "Mobs",
+            target.Name
+        )
+    end
+
+    return target.CurrentModel
+end
+
+local function clearESP()
+    for model, highlight in pairs(espHighlights) do
+        if highlight then
+            highlight:Destroy()
+        end
+
+        espHighlights[model] = nil
+    end
+end
+
+local function createESP(model)
+    if espHighlights[model] then
+        return espHighlights[model]
+    end
+
+    local highlight = Instance.new("Highlight")
+
+    highlight.Name = "LocalMobESP"
+    highlight.Adornee = model
+    highlight.FillTransparency = 1
+    highlight.OutlineColor = COLORS.White
+    highlight.OutlineTransparency = 0
+    highlight.DepthMode = Enum.HighlightDepthMode.Occluded
+
+    highlight.Parent = model
+
+    espHighlights[model] = highlight
+
+    return highlight
+end
+
+local function updateESP()
+    if destroyed or not espEnabled then
+        clearESP()
+        return
+    end
+
+    local character = player.Character
+    local root = character and character:FindFirstChild("HumanoidRootPart")
+
+    if not root then
+        clearESP()
+        return
+    end
+
+    local candidates = {}
+
+    for _, model in ipairs(modelCache.ModelsByFolder.Mobs) do
+        if isCachedModelUsable(model, "Mobs") then
+            local distance = (
+                getModelPosition(model) - root.Position
+            ).Magnitude
+
+            if distance <= SETTINGS.ESPRadius then
+                table.insert(candidates, {
+                    Model = model,
+                    Distance = distance,
+                })
+            end
+        end
+    end
+
+    table.sort(candidates, function(a, b)
+        return a.Distance < b.Distance
+    end)
+
+    local wanted = {}
+
+    local amount = math.min(
+        #candidates,
+        SETTINGS.MaxESPHighlights
+    )
+
+    for index = 1, amount do
+        local model = candidates[index].Model
+
+        wanted[model] = true
+        createESP(model)
+    end
+
+    for model, highlight in pairs(espHighlights) do
+        if not wanted[model] then
+            highlight:Destroy()
+            espHighlights[model] = nil
+        end
+    end
+end
+
+local function updateAutoClickToggle()
+    autoClickButton.Text = autoClickEnabled and "ON" or "OFF"
+
+    autoClickDescription.Text = autoClickEnabled
+        and "TOOL ACTIVATE / NO MOUSE INPUT"
+        or "AUTO CLICK DISABLED"
+end
+
+local function getEquippedTool()
+    local character = player.Character
+
+    if not character then
+        return nil
+    end
+
+    for _, object in ipairs(character:GetChildren()) do
+        if object:IsA("Tool") and object.Enabled then
+            return object
+        end
+    end
+
+    return nil
+end
+
+autoClickButton.Activated:Connect(function()
+    autoClickEnabled = not autoClickEnabled
+    SETTINGS.AutoClickEnabled = autoClickEnabled
+
+    updateAutoClickToggle()
+
+    feedbackLabel.Text = autoClickEnabled
+        and "AUTO CLICK ENABLED"
+        or "AUTO CLICK DISABLED"
+end)
+
+task.spawn(function()
+    while gui.Parent and not destroyed do
+        if autoClickEnabled and not teleporting then
+            local character = player.Character
+
+            local humanoid = character
+                and character:FindFirstChildOfClass("Humanoid")
+
+            local tool = getEquippedTool()
+
+            if humanoid and humanoid.Health > 0 and tool then
+                pcall(function()
+                    if tool.Parent == character and tool.Enabled then
+                        tool:Activate()
+                    end
+                end)
+            end
+        end
+
+        task.wait(SETTINGS.AutoClickInterval)
+    end
+end)
+
+local function applyTravelSpeed()
+    if teleporting then
+        feedbackLabel.Text = "CANNOT CHANGE SPEED DURING TELEPORT"
+        speedBox.Text = tostring(SETTINGS.TeleportSpeed)
+        return
+    end
+
+    local value = tonumber(speedBox.Text)
+
+    if not value
+        or value ~= value
+        or value == math.huge
+        or value == -math.huge then
+
+        speedBox.Text = tostring(SETTINGS.TeleportSpeed)
+        feedbackLabel.Text = "INVALID SPEED"
+        return
+    end
+
+    value = math.clamp(
+        value,
+        SETTINGS.MinTravelSpeed,
+        SETTINGS.MaxTravelSpeed
+    )
+
+    SETTINGS.TeleportSpeed = value
+    speedBox.Text = tostring(value)
+
+    feedbackLabel.Text = "TRAVEL SPEED: "
+        .. tostring(value)
+        .. " STUDS/SEC"
+end
+
+applySpeedButton.Activated:Connect(applyTravelSpeed)
+
+speedBox.FocusLost:Connect(function(enterPressed)
+    if enterPressed then
+        applyTravelSpeed()
+    end
+end)
+
+local function updateMobToggle()
+    mobToggleButton.Text = mobTeleportEnabled and "ON" or "OFF"
+
+    toggleDescription.Text = mobTeleportEnabled
+        and "AUTO NEXT SAME-NAME MOB: ON"
+        or "MOB TELEPORT DISABLED"
+end
+
+mobToggleButton.Activated:Connect(function()
+    if teleporting then
+        feedbackLabel.Text = "CANNOT CHANGE WHILE TELEPORTING"
+        return
+    end
+
+    mobTeleportEnabled = not mobTeleportEnabled
+    SETTINGS.MobTeleportEnabled = mobTeleportEnabled
+
+    updateMobToggle()
+    updateSelectedStatus()
+end)
+
+local function updateESPToggle()
+    espToggleButton.Text = espEnabled and "ON" or "OFF"
+
+    espDescription.Text = espEnabled
+        and "OUTLINE ONLY / OCCLUDED"
+        or "MOB ESP DISABLED"
+
+    if not espEnabled then
+        clearESP()
+    end
+end
+
+espToggleButton.Activated:Connect(function()
+    espEnabled = not espEnabled
+    SETTINGS.ESPEnabled = espEnabled
+
+    updateESPToggle()
+    updateESP()
+end)
+
+local function clearDropdown()
+    table.clear(dropdownRows)
+
+    for _, child in ipairs(dropdownList:GetChildren()) do
+        if child:IsA("GuiObject") then
+            child:Destroy()
+        end
+    end
+end
+
+local function updateDropdownCounts()
+    for _, entry in ipairs(dropdownRows) do
+        local group = entry.Group
+
+        local count = countAvailable(
+            group.Folder,
+            group.Name
+        )
+
+        if entry.Button.Parent then
+            entry.Button.Text = "[" .. group.Folder .. "] "
+                .. group.Name
+                .. " | "
+                .. count
+                .. " AVAILABLE"
+        end
+    end
+end
+
+local function updateSelectedStatus()
+    if not selectedTarget then
+        selectedLabel.Text = "NONE"
+        modelStatus.Text = "STATUS: NOT SELECTED"
+
+        teleportButton.Active = false
+        teleportButton.Text = "TELEPORT TO SELECTED MOB"
+
+        return
+    end
+
+    local target = selectedTarget
+    local model = resolveSelectedModel(target)
+
+    local availableCount = countAvailable(
+        target.Folder,
+        target.Name
+    )
+
+    selectedLabel.Text = "[" .. target.Folder .. "] "
+        .. target.Name
+        .. " | "
+        .. availableCount
+        .. " AVAILABLE"
+
+    if not model then
+        modelStatus.Text = target.Folder == "Mobs"
+            and "NO LIVING MOB FOUND"
+            or "CURRENT NPC UNAVAILABLE"
+
+        teleportButton.Active = false
+        teleportButton.Text = "NO AVAILABLE TARGET"
+
+        return
+    end
+
+    if teleporting then
+        modelStatus.Text = "TARGET: " .. model.Name .. " / MOVING"
+
+        teleportButton.Active = false
+        teleportButton.Text = "MOVING..."
+
+        return
+    end
+
+    if target.Folder == "Mobs" and not mobTeleportEnabled then
+        modelStatus.Text = "AVAILABLE / MOB TP OFF"
+
+        teleportButton.Active = false
+        teleportButton.Text = "MOB TELEPORT OFF"
+
+        return
+    end
+
+    modelStatus.Text = target.Folder == "Mobs"
+        and "AUTO NEXT SAME-NAME MOB ENABLED"
+        or "NPC TARGET AVAILABLE"
+
+    teleportButton.Active = true
+    teleportButton.Text = "TELEPORT TO SELECTED MODEL"
+end
+
+local function createDropdownRow(group, index)
+    local availableCount = countAvailable(
+        group.Folder,
+        group.Name
+    )
+
+    local option = create("TextButton", {
+        Name = "ModelGroup",
+
+        Size = UDim2.new(1, 0, 0, 29),
+
+        BackgroundColor3 = COLORS.Element,
+        BorderSizePixel = 0,
+
+        Text = "[" .. group.Folder .. "] "
+            .. group.Name
+            .. " | "
+            .. availableCount
+            .. " AVAILABLE",
+
+        TextColor3 = COLORS.White,
+        TextSize = 9,
+        Font = Enum.Font.GothamBold,
+        TextXAlignment = Enum.TextXAlignment.Left,
+
+        LayoutOrder = index,
+        ZIndex = 21,
+    }, dropdownList)
+
+    addCorner(option, 5)
+    addStroke(option, 0.55, 1)
+
+    create("UIPadding", {
+        PaddingLeft = UDim.new(0, 8),
+    }, option)
+
+    table.insert(dropdownRows, {
+        Button = option,
+        Group = group,
+    })
+
+    option.Activated:Connect(function()
+        selectedTarget = {
+            Folder = group.Folder,
+            Name = group.Name,
+
+            CurrentModel = findNearestLiveModel(
+                group.Folder,
+                group.Name
+            ),
+        }
+
+        dropdownButton.Text = "[" .. group.Folder .. "] "
+            .. group.Name
+            .. "     ▼"
+
+        dropdownList.Visible = false
+
+        feedbackLabel.Text = "SELECTED GROUP: " .. group.Name
+
+        updateSelectedStatus()
+    end)
+end
+
+local function searchModels()
+    clearDropdown()
+
+    local query = searchBox.Text:lower()
+    local matches = {}
+
+    for _, group in ipairs(modelCache.Groups) do
+        local name = group.Name:lower()
+        local folder = group.Folder:lower()
+
+        if query == ""
+            or string.find(name, query, 1, true)
+            or string.find(folder, query, 1, true) then
+
+            table.insert(matches, group)
+        end
+    end
+
+    countLabel.Text = "FOUND " .. #matches .. " MOB GROUPS"
+
+    if #matches == 0 then
+        create("TextLabel", {
+            Size = UDim2.new(1, 0, 0, 29),
+            BackgroundTransparency = 1,
+            Text = "NO MODELS FOUND",
+            TextColor3 = COLORS.White,
+            TextSize = 9,
+            Font = Enum.Font.Gotham,
+            ZIndex = 21,
+        }, dropdownList)
+    else
+        for index, group in ipairs(matches) do
+            createDropdownRow(group, index)
+        end
+    end
+
+    updateSelectedStatus()
+end
+
+searchButton.Activated:Connect(function()
+    searchModels()
+    dropdownList.Visible = true
+end)
+
+searchBox.FocusLost:Connect(function(enterPressed)
+    if enterPressed then
+        searchModels()
+        dropdownList.Visible = true
+    end
+end)
+
+dropdownButton.Activated:Connect(function()
+    dropdownList.Visible = not dropdownList.Visible
+
+    if dropdownList.Visible then
+        searchModels()
+    end
+end)
+
+local function getMobDestination(model)
+    if not model or not isCachedModelUsable(model, "Mobs") then
+        return nil, "MOB IS DEAD OR UNAVAILABLE"
+    end
+
+    local success, boundingCFrame, boundingSize = pcall(function()
+        return model:GetBoundingBox()
+    end)
+
+    if not success then
+        return nil, "CANNOT READ MOB BOUNDING BOX"
+    end
+
+    local bottomY = boundingCFrame.Position.Y
+        - boundingSize.Y / 2
+
+    local destinationPosition = Vector3.new(
+        boundingCFrame.Position.X,
+        bottomY - SETTINGS.MobBelowDistance,
+        boundingCFrame.Position.Z
+    )
+
+    local direction = Vector3.new(0, 0, -1)
+
+    return CFrame.lookAt(
+        destinationPosition,
+        destinationPosition + direction
+    )
+end
+
+local function getNPCDestination()
+    return SETTINGS.NPCWorldPivot
+end
+
+local function playSmoothTween(
+    root,
+    destination,
+    duration,
+    style,
+    targetModel
+)
+    local tween = TweenService:Create(
+        root,
+        TweenInfo.new(
+            duration,
+            style or Enum.EasingStyle.Linear,
+            Enum.EasingDirection.InOut
+        ),
+        {
+            CFrame = destination
+        }
+    )
+
+    activeTween = tween
+
+    local completed = false
+    local playbackState = nil
+
+    local connection = tween.Completed:Connect(function(state)
+        completed = true
+        playbackState = state
+    end)
+
+    tween:Play()
+
+    while not completed do
+        task.wait(0.1)
+
+        if targetModel
+            and not isCachedModelUsable(targetModel, "Mobs") then
+
+            tween:Cancel()
+            break
+        end
+
+        if destroyed or not gui.Parent then
+            tween:Cancel()
+            break
+        end
+    end
+
+    connection:Disconnect()
+
+    if activeTween == tween then
+        activeTween = nil
+    end
+
+    if playbackState ~= Enum.PlaybackState.Completed then
+        error("TARGET REMOVED OR MOVEMENT INTERRUPTED")
+    end
+end
+
+local function smoothTeleport(target)
+    if teleporting or not target then
+        return
+    end
+
+    local isNPC = target.Folder == "NPCs"
+    local isMob = target.Folder == "Mobs"
+
+    if isMob and not mobTeleportEnabled then
+        feedbackLabel.Text = "MOB TELEPORT IS OFF"
+        return
+    end
+
+    local model = resolveSelectedModel(target)
+
+    if not model then
+        feedbackLabel.Text = "NO LIVING TARGET FOUND"
+        updateSelectedStatus()
+        return
+    end
+
+    local character = player.Character
+
+    if not character then
+        feedbackLabel.Text = "CHARACTER NOT LOADED"
+        return
+    end
+
+    local humanoid = character:FindFirstChildOfClass("Humanoid")
+    local root = character:FindFirstChild("HumanoidRootPart")
+
+    if not humanoid or not root then
+        feedbackLabel.Text = "CHARACTER COMPONENTS MISSING"
+        return
+    end
+
+    if humanoid.Health <= 0 then
+        feedbackLabel.Text = "CHARACTER IS DEAD"
+        return
+    end
+
+    local destination
+    local errorMessage
+
+    if isNPC then
+        destination = getNPCDestination()
+    else
+        destination, errorMessage = getMobDestination(model)
+
+        if not destination then
+            feedbackLabel.Text = errorMessage
+            return
+        end
+    end
+
+    local startingPosition
+
+    if isNPC then
+        startingPosition = destination
+            * CFrame.new(0, -SETTINGS.NPCBelowDistance, 0)
+    else
+        startingPosition = destination
+    end
+
+    local distance = (
+        startingPosition.Position - root.Position
+    ).Magnitude
+
+    local travelDuration = math.clamp(
+        distance / SETTINGS.TeleportSpeed,
+        SETTINGS.MinDuration,
+        SETTINGS.MaxDuration
+    )
+
+    teleporting = true
+    updateSelectedStatus()
+
+    local previousAnchored = root.Anchored
+    local previousAutoRotate = humanoid.AutoRotate
+
+    local look = root.CFrame.LookVector
+
+    local flatLook = Vector3.new(look.X, 0, look.Z)
+
+    if flatLook.Magnitude < 0.01 then
+        flatLook = Vector3.new(0, 0, -1)
+    else
+        flatLook = flatLook.Unit
+    end
+
+    local uprightStart = CFrame.lookAt(
+        root.Position,
+        root.Position + flatLook
+    )
+
+    local laidStart = uprightStart * LAY_ROTATION
+    local laidDestination = startingPosition * LAY_ROTATION
+
+    local targetToMonitor = isMob and model or nil
+
+    local success, err = pcall(function()
+        humanoid.AutoRotate = false
+
+        root.AssemblyLinearVelocity = Vector3.zero
+        root.AssemblyAngularVelocity = Vector3.zero
+
+        root.Anchored = true
+
+        feedbackLabel.Text = "LYING DOWN..."
+
+        playSmoothTween(
+            root,
+            laidStart,
+            SETTINGS.LayDuration,
+            Enum.EasingStyle.Sine
+        )
+
+        feedbackLabel.Text = isNPC
+            and "APPROACHING NPC..."
+            or "MOVING TO " .. target.Name
+
+        playSmoothTween(
+            root,
+            laidDestination,
+            travelDuration,
+            Enum.EasingStyle.Linear,
+            targetToMonitor
+        )
+
+        if isNPC then
+            feedbackLabel.Text = "SLOWLY ASCENDING..."
+
+            playSmoothTween(
+                root,
+                destination * LAY_ROTATION,
+                SETTINGS.NPCRiseDuration,
+                Enum.EasingStyle.Sine
+            )
+        end
+
+        feedbackLabel.Text = "STANDING UP..."
+
+        playSmoothTween(
+            root,
+            destination,
+            SETTINGS.StandDuration,
+            Enum.EasingStyle.Sine
+        )
+    end)
+
+    if activeTween then
+        activeTween:Cancel()
+        activeTween = nil
+    end
+
+    if root.Parent then
+        root.AssemblyLinearVelocity = Vector3.zero
+        root.AssemblyAngularVelocity = Vector3.zero
+
+        if not success then
+            root.CFrame = CFrame.new(root.Position)
+        end
+
+        root.Anchored = previousAnchored
+    end
+
+    if humanoid.Parent then
+        humanoid.AutoRotate = previousAutoRotate
+
+        if humanoid.Health > 0 then
+            humanoid:ChangeState(
+                Enum.HumanoidStateType.GettingUp
+            )
+        end
+    end
+
+    teleporting = false
+
+    updateSelectedStatus()
+
+    if success then
+        feedbackLabel.Text = isNPC
+            and "ARRIVED AT NPC WORLD PIVOT"
+            or "ARRIVED AT " .. target.Name
+    elseif isMob and not isCachedModelUsable(model, "Mobs") then
+        feedbackLabel.Text = "MOB DIED - NEXT TARGET SELECTED"
+    else
+        feedbackLabel.Text = "FAILED: " .. tostring(err)
+    end
+end
+
+teleportButton.Activated:Connect(function()
+    if not selectedTarget then
+        feedbackLabel.Text = "SELECT A MODEL FIRST"
+        return
+    end
+
+    smoothTeleport(selectedTarget)
+end)
+
+local function cleanup()
+    if destroyed then
+        return
+    end
+
+    destroyed = true
+    dragging = false
+    dragInput = nil
+
+    if activeTween then
+        activeTween:Cancel()
+        activeTween = nil
+    end
+
+    clearESP()
+end
+
+destroyButton.Activated:Connect(function()
+    cleanup()
+    gui:Destroy()
+end)
+
+gui.Destroying:Connect(cleanup)
+
+task.spawn(function()
+    while gui.Parent and not destroyed do
+        refreshModelCache()
+
+        updateWorkspaceStatus()
+        updateSelectedStatus()
+        updateDropdownCounts()
+
+        if dropdownList.Visible then
+            searchModels()
+        end
+
+        task.wait(SETTINGS.CacheRefreshRate)
+    end
+end)
+
+task.spawn(function()
+    while gui.Parent and not destroyed do
+        updateESP()
+        task.wait(SETTINGS.ESPRefreshRate)
+    end
+end)
+
+updateMobToggle()
+updateESPToggle()
+updateAutoClickToggle()
+
+refreshModelCache()
+updateWorkspaceStatus()
+searchModels()
+updateSelectedStatus()
+updateESP()
+
+print("[MobsSearch] Loaded successfully.")
