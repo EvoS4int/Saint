@@ -9,7 +9,7 @@ local playerGui = player:WaitForChild("PlayerGui")
 
 local SETTINGS = {
     GUIWidth = 700,
-    GUIHeight = 620,
+    GUIHeight = 900,
 
     TeleportSpeed = 14,
     MinTravelSpeed = 1,
@@ -19,8 +19,13 @@ local SETTINGS = {
 
     MobTeleportEnabled = true,
     AutoNextMob = true,
-    MobUnderDistance = 5,       -- studs below the bottom of the mob (bigger = lower)
+    MobUnderDistance = 5,       -- gap from the mob edge; applies above or below based on FarmingPositionMode
+    FarmingPositionMode = "BACK", -- BACK = under / face-up; UPPER = above / face-down
     MobBackFollowEnabled = true,
+    MobOrbitEnabled = false,
+    MobOrbitSpeed = 120,          -- degrees per second
+    MobOrbitRadius = 8,           -- studs from the mob center
+    CameraNoclipEnabled = false,
 
     ESPEnabled = true,
     ESPRadius = 150,
@@ -83,6 +88,10 @@ local mobTeleportEnabled = SETTINGS.MobTeleportEnabled
 local espEnabled = SETTINGS.ESPEnabled
 local autoClickEnabled = SETTINGS.AutoClickEnabled
 local backFollowEnabled = SETTINGS.MobBackFollowEnabled
+local farmPositionMode = SETTINGS.FarmingPositionMode
+local orbitEnabled = SETTINGS.MobOrbitEnabled
+local cameraNoclipEnabled = SETTINGS.CameraNoclipEnabled
+local originalCameraOcclusionMode = player.DevCameraOcclusionMode
 local autoFarmEnabled = false
 local farmCurrentTarget = nil
 
@@ -103,15 +112,27 @@ local scanBusy = false
 local updateSelectedStatus
 local stopMount
 
-local oldGui = playerGui:FindFirstChild("MobsSearchGui")
-if oldGui then
-    oldGui:Destroy()
+local GUI_NAME = "Pilgrammedscript"
+local GUI_CHILD_PREFIX = "Pilgrammedscript_"
+
+-- Remove both the previous GUI name and this branded GUI before rebuilding.
+for _, oldName in ipairs({"MobsSearchGui", GUI_NAME}) do
+    local oldGui = playerGui:FindFirstChild(oldName)
+    if oldGui then
+        oldGui:Destroy()
+    end
 end
 
 local function create(className, properties, parent)
     local object = Instance.new(className)
     for property, value in pairs(properties) do
-        object[property] = value
+        if property == "Name" and typeof(value) == "string"
+            and value ~= GUI_NAME
+            and string.sub(value, 1, #GUI_CHILD_PREFIX) ~= GUI_CHILD_PREFIX then
+            object[property] = GUI_CHILD_PREFIX .. value
+        else
+            object[property] = value
+        end
     end
     object.Parent = parent
     return object
@@ -188,7 +209,7 @@ local function makePanel(parent, name, size, position)
 end
 
 local gui = create("ScreenGui", {
-    Name = "MobsSearchGui",
+    Name = GUI_NAME,
     ResetOnSpawn = false,
     IgnoreGuiInset = true,
     ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
@@ -221,7 +242,7 @@ addCorner(header, 10)
 local title = makeLabel(
     header,
     "Title",
-    "MOBS SEARCH",
+    "PILGRAMMEDSCRIPT",
     UDim2.fromOffset(180, 44),
     UDim2.fromOffset(15, 0),
     14
@@ -231,7 +252,7 @@ title.Font = Enum.Font.GothamBold
 local subtitle = makeLabel(
     header,
     "Subtitle",
-    "ALL WORKSPACE FOLDERS",
+    "PILGRAMMED AUTOMATION",
     UDim2.fromOffset(170, 44),
     UDim2.fromOffset(180, 0),
     9,
@@ -445,7 +466,7 @@ local modelStatus = makeLabel(
 
 local right = create("Frame", {
     Name = "RightPanel",
-    Size = UDim2.fromOffset(336, 568),
+    Size = UDim2.fromOffset(336, 850),
     Position = UDim2.fromOffset(350, 54),
     BackgroundTransparency = 1,
 }, main)
@@ -628,7 +649,7 @@ local backFollowPanel = makePanel(
 local backFollowTitle = makeLabel(
     backFollowPanel,
     "BackFollowTitle",
-    "MOB UNDER FOLLOW",
+    "MOB POSITION FOLLOW",
     UDim2.fromOffset(220, 20),
     UDim2.fromOffset(10, 4),
     10
@@ -690,12 +711,221 @@ local autoFarmButton = makeButton(
 
 autoFarmButton.ZIndex = 10
 
+local mobDistancePanel = makePanel(
+    right,
+    "MobDistancePanel",
+    UDim2.new(1, 0, 0, 49),
+    UDim2.fromOffset(0, 346)
+)
+
+local mobDistanceTitle = makeLabel(
+    mobDistancePanel,
+    "MobDistanceTitle",
+    "MOB UNDER DISTANCE",
+    UDim2.fromOffset(185, 20),
+    UDim2.fromOffset(10, 4),
+    10
+)
+mobDistanceTitle.Font = Enum.Font.GothamBold
+
+local mobDistanceDescription = makeLabel(
+    mobDistancePanel,
+    "MobDistanceDescription",
+    "GAP: " .. tostring(SETTINGS.MobUnderDistance) .. " STUDS",
+    UDim2.fromOffset(185, 17),
+    UDim2.fromOffset(10, 26),
+    8,
+    true
+)
+
+local mobDistanceBox = create("TextBox", {
+    Name = "MobDistanceBox",
+    Size = UDim2.fromOffset(55, 29),
+    Position = UDim2.new(1, -126, 0.5, -14),
+    BackgroundColor3 = COLORS.Element,
+    BorderSizePixel = 0,
+    Text = tostring(SETTINGS.MobUnderDistance),
+    PlaceholderText = "5",
+    TextColor3 = COLORS.White,
+    PlaceholderColor3 = COLORS.Gray,
+    TextSize = 11,
+    Font = Enum.Font.GothamBold,
+    ClearTextOnFocus = false,
+}, mobDistancePanel)
+addCorner(mobDistanceBox, 5)
+addStroke(mobDistanceBox, 0.3, 1)
+
+local applyMobDistanceButton = makeButton(
+    mobDistancePanel,
+    "ApplyMobDistanceButton",
+    "APPLY",
+    UDim2.fromOffset(62, 29),
+    UDim2.new(1, -68, 0.5, -14)
+)
+
+local farmPositionPanel = makePanel(
+    right,
+    "FarmPositionPanel",
+    UDim2.new(1, 0, 0, 49),
+    UDim2.fromOffset(0, 400)
+)
+
+local farmPositionTitle = makeLabel(
+    farmPositionPanel,
+    "FarmPositionTitle",
+    "FARMING POSITION",
+    UDim2.fromOffset(195, 20),
+    UDim2.fromOffset(10, 4),
+    10
+)
+farmPositionTitle.Font = Enum.Font.GothamBold
+
+local farmPositionDescription = makeLabel(
+    farmPositionPanel,
+    "FarmPositionDescription",
+    "UNDER MOB / FACE UP",
+    UDim2.fromOffset(195, 17),
+    UDim2.fromOffset(10, 26),
+    8,
+    true
+)
+
+local farmPositionButton = makeButton(
+    farmPositionPanel,
+    "FarmPositionButton",
+    "ON BACK",
+    UDim2.fromOffset(105, 29),
+    UDim2.new(1, -117, 0.5, -14)
+)
+
+local orbitPanel = makePanel(
+    right,
+    "OrbitPanel",
+    UDim2.new(1, 0, 0, 49),
+    UDim2.fromOffset(0, 454)
+)
+
+local orbitTitle = makeLabel(
+    orbitPanel,
+    "OrbitTitle",
+    "ORBIT AROUND MOB",
+    UDim2.fromOffset(210, 20),
+    UDim2.fromOffset(10, 4),
+    10
+)
+orbitTitle.Font = Enum.Font.GothamBold
+
+local orbitDescription = makeLabel(
+    orbitPanel,
+    "OrbitDescription",
+    "CIRCLE THE CURRENT FARM TARGET",
+    UDim2.fromOffset(230, 17),
+    UDim2.fromOffset(10, 26),
+    8,
+    true
+)
+
+local orbitToggleButton = makeButton(
+    orbitPanel,
+    "OrbitToggleButton",
+    "OFF",
+    UDim2.fromOffset(65, 29),
+    UDim2.new(1, -77, 0.5, -14)
+)
+
+local orbitSpeedPanel = makePanel(
+    right,
+    "OrbitSpeedPanel",
+    UDim2.new(1, 0, 0, 49),
+    UDim2.fromOffset(0, 508)
+)
+
+local orbitSpeedTitle = makeLabel(
+    orbitSpeedPanel,
+    "OrbitSpeedTitle",
+    "ORBIT SPEED",
+    UDim2.fromOffset(180, 20),
+    UDim2.fromOffset(10, 4),
+    10
+)
+orbitSpeedTitle.Font = Enum.Font.GothamBold
+
+local orbitSpeedDescription = makeLabel(
+    orbitSpeedPanel,
+    "OrbitSpeedDescription",
+    "10 - 720 DEGREES / SECOND",
+    UDim2.fromOffset(205, 17),
+    UDim2.fromOffset(10, 26),
+    8,
+    true
+)
+
+local orbitSpeedBox = create("TextBox", {
+    Name = "OrbitSpeedBox",
+    Size = UDim2.fromOffset(55, 29),
+    Position = UDim2.new(1, -126, 0.5, -14),
+    BackgroundColor3 = COLORS.Element,
+    BorderSizePixel = 0,
+    Text = tostring(SETTINGS.MobOrbitSpeed),
+    PlaceholderText = "120",
+    TextColor3 = COLORS.White,
+    PlaceholderColor3 = COLORS.Gray,
+    TextSize = 11,
+    Font = Enum.Font.GothamBold,
+    ClearTextOnFocus = false,
+}, orbitSpeedPanel)
+addCorner(orbitSpeedBox, 5)
+addStroke(orbitSpeedBox, 0.3, 1)
+
+local applyOrbitSpeedButton = makeButton(
+    orbitSpeedPanel,
+    "ApplyOrbitSpeedButton",
+    "APPLY",
+    UDim2.fromOffset(62, 29),
+    UDim2.new(1, -68, 0.5, -14)
+)
+
+local cameraNoclipPanel = makePanel(
+    right,
+    "CameraNoclipPanel",
+    UDim2.new(1, 0, 0, 49),
+    UDim2.fromOffset(0, 562)
+)
+
+local cameraNoclipTitle = makeLabel(
+    cameraNoclipPanel,
+    "CameraNoclipTitle",
+    "CAMERA NOCLIP",
+    UDim2.fromOffset(210, 20),
+    UDim2.fromOffset(10, 4),
+    10
+)
+cameraNoclipTitle.Font = Enum.Font.GothamBold
+
+local cameraNoclipDescription = makeLabel(
+    cameraNoclipPanel,
+    "CameraNoclipDescription",
+    "FADE WALLS THAT BLOCK THE CAMERA",
+    UDim2.fromOffset(235, 17),
+    UDim2.fromOffset(10, 26),
+    8,
+    true
+)
+
+local cameraNoclipButton = makeButton(
+    cameraNoclipPanel,
+    "CameraNoclipButton",
+    "OFF",
+    UDim2.fromOffset(65, 29),
+    UDim2.new(1, -77, 0.5, -14)
+)
+
 local workspaceTitle = makeLabel(
     right,
     "WorkspaceTitle",
-    "WORKSPACE FOLDERS",
+    "WORKSPACE CONTENTS / ALL MODELS",
     UDim2.new(1, 0, 0, 17),
-    UDim2.fromOffset(0, 346),
+    UDim2.fromOffset(0, 616),
     10,
     true
 )
@@ -706,7 +936,7 @@ local folderPanel = makePanel(
     right,
     "FolderPanel",
     UDim2.new(1, 0, 0, 116),
-    UDim2.fromOffset(0, 367)
+    UDim2.fromOffset(0, 637)
 )
 
 local function createFolderStatus(name, x, y, width)
@@ -736,7 +966,7 @@ local teleportButton = makeButton(
     "TeleportButton",
     "TELEPORT TO MODEL",
     UDim2.fromOffset(165, 38),
-    UDim2.fromOffset(0, 491)
+    UDim2.fromOffset(0, 761)
 )
 teleportButton.Active = false
 
@@ -745,7 +975,7 @@ local returnButton = makeButton(
     "ReturnToMeButton",
     "RETURN TO ME",
     UDim2.fromOffset(165, 38),
-    UDim2.fromOffset(171, 491)
+    UDim2.fromOffset(171, 761)
 )
 returnButton.Active = false
 
@@ -754,7 +984,7 @@ local feedbackLabel = makeLabel(
     "Feedback",
     "Select a model group to begin.",
     UDim2.new(1, 0, 0, 22),
-    UDim2.fromOffset(0, 533),
+    UDim2.fromOffset(0, 803),
     9,
     true
 )
@@ -958,48 +1188,101 @@ local function updateWorkspaceStatus()
     end
 end
 
--- Every Folder directly inside Workspace is a search root. Mobs and NPCs
--- come first so they claim their models before any other folder can.
+-- Every direct Workspace child is a search root. This includes folders,
+-- top-level models, loose parts, and custom Workspace containers.
 local function getScanRoots()
     local roots = {}
     local seenRoots = {}
 
-    local function addRoot(folder, category)
-        if folder and not seenRoots[folder] then
-            seenRoots[folder] = true
+    local function addRoot(instance, category)
+        if instance and not seenRoots[instance] then
+            seenRoots[instance] = true
             table.insert(roots, {
-                Root = folder,
+                Root = instance,
                 Category = category,
                 Fast = category == "Mobs" or category == "NPCs",
             })
         end
     end
 
-    local mobsFolder = workspace:FindFirstChild("Mobs")
-    if mobsFolder and mobsFolder:IsA("Folder") then
-        addRoot(mobsFolder, "Mobs")
-    end
-
-    addRoot(findNPCFolder(), "NPCs")
-
+    -- Include every direct Workspace child, not only Folder instances.
+    -- Folder contents are recursively scanned; top-level Models and Parts
+    -- are included as individual selectable Workspace entries.
     for _, child in ipairs(workspace:GetChildren()) do
+        local category = "Workspace"
         if child:IsA("Folder") then
             if isNPCFolderName(child.Name) then
-                addRoot(child, "NPCs")
+                category = "NPCs"
+            elseif string.lower(child.Name) == "mobs" then
+                category = "Mobs"
             else
-                addRoot(child, child.Name)
+                category = child.Name
             end
         end
+        addRoot(child, category)
     end
 
     return roots
 end
 
--- Walks a folder (and every sub-folder inside it). Models are taken at their
--- top level, so mob/NPC parts are never listed as separate entries.
+-- Scan a Workspace root recursively. Models are stored as a single selectable
+-- object (their descendant parts are not duplicated as separate results).
 local function scanRoot(root, rootCategory)
     local out = {}
     local visited = 0
+
+    local function addModel(model, category)
+        if Players:GetPlayerFromCharacter(model) then
+            return false
+        end
+
+        local childCategory = category
+        if isNPCModel(model) then
+            childCategory = "NPCs"
+        end
+
+        table.insert(out, {
+            Object = model,
+            Category = childCategory,
+        })
+        return true
+    end
+
+    -- Also index nested Models inside another Model / custom container. Parts
+    -- under a Model are intentionally not listed separately.
+    local function walkNestedModels(container, category)
+        for _, child in ipairs(container:GetChildren()) do
+            visited = visited + 1
+            if visited % 250 == 0 then
+                task.wait()
+            end
+
+            if child:IsA("Model") then
+                if addModel(child, category) and category ~= "Mobs" then
+                    walkNestedModels(child, category)
+                end
+            elseif not child:IsA("BasePart") and #child:GetChildren() > 0 then
+                local childCategory = category
+                if child:IsA("Folder") then
+                    if isNPCFolderName(child.Name) then
+                        childCategory = "NPCs"
+                    elseif string.lower(child.Name) == "mobs" then
+                        childCategory = "Mobs"
+                    end
+                end
+                walkNestedModels(child, childCategory)
+            end
+        end
+    end
+
+    local function addPart(part, category)
+        if SETTINGS.IncludeLooseParts then
+            table.insert(out, {
+                Object = part,
+                Category = category,
+            })
+        end
+    end
 
     local function walk(container, category)
         for _, child in ipairs(container:GetChildren()) do
@@ -1009,36 +1292,41 @@ local function scanRoot(root, rootCategory)
             end
 
             if child:IsA("Model") then
-                if not Players:GetPlayerFromCharacter(child) then
-                    local childCategory = category
-
-                    if childCategory == "Mobs" and isNPCModel(child) then
-                        childCategory = "NPCs"
-                    end
-
-                    table.insert(out, {
-                        Object = child,
-                        Category = childCategory,
-                    })
+                if addModel(child, category) then
+                    walkNestedModels(child, category)
                 end
-            elseif child:IsA("Folder") then
+            elseif child:IsA("BasePart") then
+                addPart(child, category)
+            else
                 local childCategory = category
-
-                if isNPCFolderName(child.Name) then
-                    childCategory = "NPCs"
+                if child:IsA("Folder") then
+                    if isNPCFolderName(child.Name) then
+                        childCategory = "NPCs"
+                    elseif string.lower(child.Name) == "mobs" then
+                        childCategory = "Mobs"
+                    end
                 end
 
-                walk(child, childCategory)
-            elseif SETTINGS.IncludeLooseParts and child:IsA("BasePart") then
-                table.insert(out, {
-                    Object = child,
-                    Category = category,
-                })
+                -- Recurse through folders and other containers (such as
+                -- Tools or custom Workspace containers) without indexing
+                -- every descendant of a Model as a separate target.
+                if #child:GetChildren() > 0 then
+                    walk(child, childCategory)
+                end
             end
         end
     end
 
-    walk(root, rootCategory)
+    if root:IsA("Model") then
+        if addModel(root, rootCategory) then
+            walkNestedModels(root, rootCategory)
+        end
+    elseif root:IsA("BasePart") then
+        addPart(root, rootCategory)
+    else
+        walk(root, rootCategory)
+    end
+
     return out
 end
 
@@ -1133,7 +1421,7 @@ local function refreshModelCache(forceFull)
     scanBusy = false
 
     if not success then
-        warn("[MobsSearch] Scan failed: " .. tostring(err))
+        warn("[Pilgrammedscript] Scan failed: " .. tostring(err))
     end
 end
 
@@ -1292,8 +1580,8 @@ local function getMobForward(model)
     return forward.Unit
 end
 
--- Position used while following a mob: directly UNDER it, lying face-up.
--- Change SETTINGS.MobUnderDistance to move it closer / further below the mob.
+-- Farming position is selectable: BACK = under/face-up; UPPER = above/face-down.
+-- MobUnderDistance controls the gap from the mob edge in either position.
 local function getMobUnderCFrame(model)
     if not model or not isCachedModelUsable(model, "Mobs") then
         return nil
@@ -1325,20 +1613,92 @@ local function getMobUnderCFrame(model)
         halfHeight = boxSize.Y / 2
     end
 
-    local underPosition = Vector3.new(
-        centerPosition.X,
-        centerPosition.Y - halfHeight - SETTINGS.MobUnderDistance,
-        centerPosition.Z
-    )
+    local targetPosition
+    local faceDirection
+
+    if farmPositionMode == "UPPER" then
+        -- Above the mob, with the character lying face-down toward it.
+        targetPosition = Vector3.new(
+            centerPosition.X,
+            centerPosition.Y + halfHeight + SETTINGS.MobUnderDistance,
+            centerPosition.Z
+        )
+        faceDirection = Vector3.new(0, -1, 0)
+    else
+        -- Under the mob, lying on the character's back and looking upward.
+        targetPosition = Vector3.new(
+            centerPosition.X,
+            centerPosition.Y - halfHeight - SETTINGS.MobUnderDistance,
+            centerPosition.Z
+        )
+        faceDirection = Vector3.new(0, 1, 0)
+    end
 
     local mobForward = getMobForward(model)
-
-    -- Looking straight up = lying face-up, facing the mob above you
     return CFrame.lookAt(
-        underPosition,
-        underPosition + Vector3.new(0, 1, 0),
+        targetPosition,
+        targetPosition + faceDirection,
         mobForward
     )
+end
+
+-- Orbit follows a circular horizontal path around the mob while preserving
+-- the selected prone orientation (ON BACK / FACE DOWN).
+local function getMobOrbitCFrame(model)
+    local baseCFrame = getMobUnderCFrame(model)
+    if not baseCFrame then
+        return nil
+    end
+
+    local centerPosition
+    if model:IsA("BasePart") then
+        centerPosition = model.Position
+    else
+        local success, boxCFrame = pcall(function()
+            local box, _ = model:GetBoundingBox()
+            return box
+        end)
+        if not success or not boxCFrame then
+            return nil
+        end
+        centerPosition = boxCFrame.Position
+    end
+
+    local angle = os.clock() * math.rad(SETTINGS.MobOrbitSpeed)
+    local radius = SETTINGS.MobOrbitRadius
+    local orbitPosition = Vector3.new(
+        centerPosition.X + math.cos(angle) * radius,
+        baseCFrame.Position.Y,
+        centerPosition.Z + math.sin(angle) * radius
+    )
+
+    local inward = Vector3.new(
+        centerPosition.X - orbitPosition.X,
+        0,
+        centerPosition.Z - orbitPosition.Z
+    )
+    if inward.Magnitude < 0.001 then
+        inward = Vector3.new(0, 0, -1)
+    else
+        inward = inward.Unit
+    end
+
+    local faceDirection = farmPositionMode == "UPPER"
+        and Vector3.new(0, -1, 0)
+        or Vector3.new(0, 1, 0)
+
+    return CFrame.lookAt(
+        orbitPosition,
+        orbitPosition + faceDirection,
+        inward
+    )
+end
+
+local function getMobFollowCFrame(model)
+    if orbitEnabled then
+        return getMobOrbitCFrame(model)
+    end
+    return getMobUnderCFrame(model)
 end
 
 -- Used for everything that is not a mob or an NPC (ores, chests, map pieces...)
@@ -1556,6 +1916,31 @@ speedBox.FocusLost:Connect(function(enterPressed)
     end
 end)
 
+local function applyMobUnderDistance()
+    local value = tonumber(mobDistanceBox.Text)
+    if not value or value ~= value or value == math.huge or value == -math.huge then
+        mobDistanceBox.Text = tostring(SETTINGS.MobUnderDistance)
+        feedbackLabel.Text = "INVALID MOB DISTANCE"
+        return
+    end
+
+    value = math.clamp(value, 0, 100)
+    SETTINGS.MobUnderDistance = value
+    mobDistanceBox.Text = tostring(value)
+    mobDistanceDescription.Text = "GAP: " .. tostring(value) .. " STUDS"
+    feedbackLabel.Text = "MOB GAP UPDATED: " .. tostring(value) .. " STUDS"
+    backFollowDescription.Text = backFollowEnabled
+        and ("STAY " .. tostring(value) .. " STUDS " .. (farmPositionMode == "UPPER" and "ABOVE" or "UNDER"))
+        or "UNDER FOLLOW DISABLED"
+end
+
+applyMobDistanceButton.Activated:Connect(applyMobUnderDistance)
+mobDistanceBox.FocusLost:Connect(function(enterPressed)
+    if enterPressed then
+        applyMobUnderDistance()
+    end
+end)
+
 local function updateMobToggle()
     mobToggleButton.Text = mobTeleportEnabled and "ON" or "OFF"
     toggleDescription.Text = mobTeleportEnabled
@@ -1577,9 +1962,108 @@ end
 local function updateBackFollowToggle()
     backFollowButton.Text = backFollowEnabled and "ON" or "OFF"
     backFollowDescription.Text = backFollowEnabled
-        and "STAY 5 STUDS UNDER THE MOB"
-        or "UNDER FOLLOW DISABLED"
+        and ("STAY " .. tostring(SETTINGS.MobUnderDistance) .. " STUDS " .. (farmPositionMode == "UPPER" and "ABOVE" or "UNDER"))
+        or "POSITION FOLLOW DISABLED"
 end
+
+local function updateFarmPositionMode()
+    if farmPositionMode == "UPPER" then
+        farmPositionButton.Text = "FACE DOWN"
+        farmPositionDescription.Text = "ABOVE MOB / FACE DOWN"
+    else
+        farmPositionButton.Text = "ON BACK"
+        farmPositionDescription.Text = "UNDER MOB / FACE UP"
+    end
+end
+
+farmPositionButton.Activated:Connect(function()
+    farmPositionMode = farmPositionMode == "UPPER" and "BACK" or "UPPER"
+    SETTINGS.FarmingPositionMode = farmPositionMode
+    updateFarmPositionMode()
+    updateBackFollowToggle()
+    feedbackLabel.Text = farmPositionMode == "UPPER"
+        and "FARMING POSITION: UPPER / FACE DOWN"
+        or "FARMING POSITION: UNDER / ON BACK"
+end)
+
+local function updateOrbitToggle()
+    orbitToggleButton.Text = orbitEnabled and "ON" or "OFF"
+    orbitDescription.Text = orbitEnabled
+        and ("ORBITING / " .. tostring(SETTINGS.MobOrbitSpeed) .. " DEG/SEC")
+        or "CIRCLE THE CURRENT FARM TARGET"
+end
+
+local function setOrbitEnabled(enabled)
+    orbitEnabled = enabled == true
+    SETTINGS.MobOrbitEnabled = orbitEnabled
+    updateOrbitToggle()
+    feedbackLabel.Text = orbitEnabled
+        and "MOB ORBIT ENABLED"
+        or "MOB ORBIT DISABLED"
+end
+
+orbitToggleButton.Activated:Connect(function()
+    setOrbitEnabled(not orbitEnabled)
+end)
+
+local function applyOrbitSpeed()
+    local value = tonumber(orbitSpeedBox.Text)
+    if not value or value ~= value or value == math.huge or value == -math.huge then
+        orbitSpeedBox.Text = tostring(SETTINGS.MobOrbitSpeed)
+        feedbackLabel.Text = "INVALID ORBIT SPEED"
+        return
+    end
+
+    value = math.clamp(value, 10, 720)
+    SETTINGS.MobOrbitSpeed = value
+    orbitSpeedBox.Text = tostring(value)
+    updateOrbitToggle()
+    feedbackLabel.Text = "ORBIT SPEED: " .. tostring(value) .. " DEGREES/SEC"
+end
+
+applyOrbitSpeedButton.Activated:Connect(applyOrbitSpeed)
+orbitSpeedBox.FocusLost:Connect(function(enterPressed)
+    if enterPressed then
+        applyOrbitSpeed()
+    end
+end)
+
+local function updateCameraNoclipToggle()
+    cameraNoclipButton.Text = cameraNoclipEnabled and "ON" or "OFF"
+    cameraNoclipDescription.Text = cameraNoclipEnabled
+        and "INVISICAM / CAMERA THROUGH WALLS"
+        or "FADE WALLS THAT BLOCK THE CAMERA"
+end
+
+-- Roblox exposes Invisicam as its built-in camera-occlusion mode. It fades
+-- obstructing geometry instead of running a custom Scriptable camera.
+local function setCameraNoclipEnabled(enabled)
+    enabled = enabled == true
+    local success, err = pcall(function()
+        if enabled then
+            player.DevCameraOcclusionMode = Enum.DevCameraOcclusionMode.Invisicam
+        else
+            player.DevCameraOcclusionMode = originalCameraOcclusionMode
+                or Enum.DevCameraOcclusionMode.Zoom
+        end
+    end)
+
+    if not success then
+        feedbackLabel.Text = "CAMERA NOCLIP UNAVAILABLE: " .. tostring(err)
+        return
+    end
+
+    cameraNoclipEnabled = enabled
+    SETTINGS.CameraNoclipEnabled = enabled
+    updateCameraNoclipToggle()
+    feedbackLabel.Text = cameraNoclipEnabled
+        and "CAMERA NOCLIP ENABLED"
+        or "CAMERA NOCLIP DISABLED"
+end
+
+cameraNoclipButton.Activated:Connect(function()
+    setCameraNoclipEnabled(not cameraNoclipEnabled)
+end)
 
 ------------------------------------------------------------------------
 -- CHARACTER STATE / MOUNT / TWEEN
@@ -1783,7 +2267,7 @@ local function startMobMount(model, savedState, autoFarmMode)
     local targetFolder = selectedTarget and selectedTarget.Folder or "Mobs"
     local targetName = selectedTarget and selectedTarget.Name or (model and model.Name or "")
     local usableModel = model and isCachedModelUsable(model, "Mobs") and model or nil
-    local initialTargetCFrame = usableModel and getMobUnderCFrame(usableModel) or nil
+    local initialTargetCFrame = usableModel and getMobFollowCFrame(usableModel) or nil
     local initialHoldCFrame = initialTargetCFrame
         and initialTargetCFrame * savedState.RootToPivot
         or character:GetPivot()
@@ -1861,7 +2345,7 @@ local function startMobMount(model, savedState, autoFarmMode)
         end
 
         if state.Model and isCachedModelUsable(state.Model, "Mobs") then
-            local targetCFrame = getMobUnderCFrame(state.Model)
+            local targetCFrame = getMobFollowCFrame(state.Model)
             if targetCFrame then
                 state.HoldCFrame = targetCFrame * state.RootToPivot
                 state.Character:PivotTo(state.HoldCFrame)
@@ -2093,7 +2577,9 @@ updateSelectedStatus = function()
     end
 
     if mountState and mountState.Model == model then
-        modelStatus.Text = "LYING FACE-UP UNDER THE MOB"
+        modelStatus.Text = farmPositionMode == "UPPER"
+            and "LYING FACE-DOWN ABOVE THE MOB"
+            or "LYING FACE-UP UNDER THE MOB"
         teleportButton.Active = false
         teleportButton.Text = "MOUNTED"
         return
@@ -2462,7 +2948,7 @@ local function smoothTeleport(target, autoFarmMode)
         elseif shouldMount then
             feedbackLabel.Text = autoFarmMode
                 and ("AUTOFARM: FOLLOWING " .. string.upper(model.Name))
-                or "LYING FACE-UP UNDER THE MOB"
+                or (farmPositionMode == "UPPER" and "LYING FACE-DOWN ABOVE THE MOB" or "LYING FACE-UP UNDER THE MOB")
         else
             feedbackLabel.Text = "ARRIVED ABOVE " .. target.Name
         end
@@ -2615,7 +3101,7 @@ local function startSelectedMobSearch()
             elseif not mobTeleportEnabled then
                 feedbackLabel.Text = "MOB TELEPORT DISABLED - SEARCH PAUSED"
             elseif not backFollowEnabled then
-                feedbackLabel.Text = "ENABLE MOB UNDER FOLLOW TO STAY PRONE"
+                feedbackLabel.Text = "ENABLE MOB POSITION FOLLOW TO STAY PRONE"
             end
 
             task.wait(SETTINGS.MobSearchInterval)
@@ -2656,7 +3142,7 @@ teleportButton.Activated:Connect(function()
             return
         end
         if not backFollowEnabled then
-            feedbackLabel.Text = "TURN ON MOB UNDER FOLLOW TO STAY PRONE"
+            feedbackLabel.Text = "TURN ON MOB POSITION FOLLOW TO STAY PRONE"
             updateSelectedStatus()
             return
         end
@@ -2850,6 +3336,14 @@ local function cleanup()
     clearESP()
     stopNoclip()
 
+    -- Restore the user's original camera occlusion behavior when this GUI closes.
+    pcall(function()
+        player.DevCameraOcclusionMode = originalCameraOcclusionMode
+            or Enum.DevCameraOcclusionMode.Zoom
+    end)
+    cameraNoclipEnabled = false
+    SETTINGS.CameraNoclipEnabled = false
+
     for _, connection in ipairs(globalConnections) do
         connection:Disconnect()
     end
@@ -2888,11 +3382,15 @@ updateMobToggle()
 updateESPToggle()
 updateAutoClickToggle()
 updateBackFollowToggle()
+updateFarmPositionMode()
+mobDistanceDescription.Text = "GAP: " .. tostring(SETTINGS.MobUnderDistance) .. " STUDS"
+updateOrbitToggle()
+updateCameraNoclipToggle()
 updateAutoFarmToggle()
 updateWorkspaceStatus()
 updateSelectedStatus()
 
--- Model scan loop: Mobs / NPCs every CacheRefreshRate, all other folders every FullScanRate
+-- Model scan loop: fast mob/NPC roots every CacheRefreshRate; all other Workspace roots on FullScanRate
 task.spawn(function()
     local lastFullScan = -math.huge
 
@@ -2965,4 +3463,4 @@ task.spawn(function()
     end
 end)
 
-print("[MobsSearch] All-folder finder loaded successfully.")
+print("[Pilgrammedscript] Loaded successfully.")
