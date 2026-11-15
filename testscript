@@ -19,7 +19,7 @@ local SETTINGS = {
 
     MobTeleportEnabled = true,
     AutoNextMob = true,
-    MobUnderDistance = 7,       -- studs below the bottom of the mob (bigger = lower)
+    MobUnderDistance = 5,       -- studs below the bottom of the mob (bigger = lower)
     MobBackFollowEnabled = true,
 
     ESPEnabled = true,
