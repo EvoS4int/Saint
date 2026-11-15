@@ -5,6 +5,11 @@ local RunService = game:GetService("RunService")
 local CollectionService = game:GetService("CollectionService")
 
 local player = Players.LocalPlayer
+if not player then
+    warn("[Pilgrammedscript] This is a client-side GUI. Run it from a LocalScript in StarterPlayerScripts or your client-side executor, not a server Script.")
+    return
+end
+
 local playerGui = player:WaitForChild("PlayerGui")
 
 local SETTINGS = {
@@ -61,6 +66,12 @@ local SETTINGS = {
     AutoFarmSearchInterval = 0.6, -- retry nearby mob discovery at this interval
     AutoFarmMethod = "NEAREST",  -- NEAREST, LOWEST_HP, HIGHEST_HP, FARTHEST, RANDOM, CYCLE, SELECTED_NAME
 
+    AutoChestEnabled = false,
+    AutoGPromptEnabled = false,
+    AutoChestRadius = 500,
+    AutoChestSearchInterval = 0.65,
+    AutoChestPromptCooldown = 25,
+
     -- Search everything inside every Workspace folder
     IncludeLooseParts = true,   -- also list single Parts (ores, chests, etc.) that are not inside a Model
     MaxDropdownRows = 80,       -- max rows shown in the list (keeps the UI fast)
@@ -92,11 +103,19 @@ local backFollowEnabled = SETTINGS.MobBackFollowEnabled
 local farmPositionMode = SETTINGS.FarmingPositionMode
 local orbitEnabled = SETTINGS.MobOrbitEnabled
 local cameraNoclipEnabled = SETTINGS.CameraNoclipEnabled
-local originalCameraOcclusionMode = player.DevCameraOcclusionMode
+local originalCameraOcclusionMode = nil
+pcall(function()
+    originalCameraOcclusionMode = player.DevCameraOcclusionMode
+end)
 local autoFarmEnabled = false
 local farmCurrentTarget = nil
 local farmCycleLastModel = nil
 local farmCycleIndex = 0
+local autoChestEnabled = SETTINGS.AutoChestEnabled
+local autoGPromptEnabled = SETTINGS.AutoGPromptEnabled
+local autoChestToken = 0
+local autoChestBusy = false
+local chestPromptCooldowns = setmetatable({}, {__mode = "k"})
 
 local espHighlights = {}
 local dropdownRows = {}
@@ -115,6 +134,8 @@ local scanBusy = false
 local updateSelectedStatus
 local updateAutoFarmMethodUI
 local updateAutoFarmToggle
+local updateAutoChestToggle
+local updateAutoGPromptToggle
 local stopMount
 
 local GUI_NAME = "Pilgrammedscript"
@@ -216,6 +237,8 @@ end
 local gui = create("ScreenGui", {
     Name = GUI_NAME,
     ResetOnSpawn = false,
+    Enabled = true,
+    DisplayOrder = 10000,
     IgnoreGuiInset = true,
     ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
 }, playerGui)
@@ -819,11 +842,85 @@ local autoFarmMethodButton = makeButton(
 )
 autoFarmMethodButton.ZIndex = 10
 
+local autoChestPanel = makePanel(
+    right,
+    "AutoChestPanel",
+    UDim2.new(1, 0, 0, 49),
+    UDim2.fromOffset(0, 400)
+)
+
+local autoChestTitle = makeLabel(
+    autoChestPanel,
+    "AutoChestTitle",
+    "AUTO CHEST FARM",
+    UDim2.fromOffset(210, 20),
+    UDim2.fromOffset(10, 4),
+    10
+)
+autoChestTitle.Font = Enum.Font.GothamBold
+
+local autoChestDescription = makeLabel(
+    autoChestPanel,
+    "AutoChestDescription",
+    "FIND + APPROACH G-KEY CHEST PROMPTS",
+    UDim2.fromOffset(235, 17),
+    UDim2.fromOffset(10, 26),
+    8,
+    true
+)
+
+local autoChestButton = makeButton(
+    autoChestPanel,
+    "AutoChestButton",
+    "OFF",
+    UDim2.fromOffset(65, 29),
+    UDim2.new(1, -77, 0.5, -14)
+)
+
+autoChestButton.ZIndex = 10
+
+local autoGPromptPanel = makePanel(
+    right,
+    "AutoGPromptPanel",
+    UDim2.new(1, 0, 0, 49),
+    UDim2.fromOffset(0, 454)
+)
+
+local autoGPromptTitle = makeLabel(
+    autoGPromptPanel,
+    "AutoGPromptTitle",
+    "AUTO G PROMPT",
+    UDim2.fromOffset(210, 20),
+    UDim2.fromOffset(10, 4),
+    10
+)
+autoGPromptTitle.Font = Enum.Font.GothamBold
+
+local autoGPromptDescription = makeLabel(
+    autoGPromptPanel,
+    "AutoGPromptDescription",
+    "HOLD G FOR CHESTS WHEN IN RANGE",
+    UDim2.fromOffset(235, 17),
+    UDim2.fromOffset(10, 26),
+    8,
+    true
+)
+
+local autoGPromptButton = makeButton(
+    autoGPromptPanel,
+    "AutoGPromptButton",
+    "OFF",
+    UDim2.fromOffset(65, 29),
+    UDim2.new(1, -77, 0.5, -14)
+)
+
+autoGPromptButton.ZIndex = 10
+
 local mobDistancePanel = makePanel(
     right,
     "MobDistancePanel",
     UDim2.new(1, 0, 0, 49),
-    UDim2.fromOffset(0, 400)
+    UDim2.fromOffset(0, 508)
 )
 
 local mobDistanceTitle = makeLabel(
@@ -875,7 +972,7 @@ local farmPositionPanel = makePanel(
     right,
     "FarmPositionPanel",
     UDim2.new(1, 0, 0, 49),
-    UDim2.fromOffset(0, 454)
+    UDim2.fromOffset(0, 562)
 )
 
 local farmPositionTitle = makeLabel(
@@ -910,7 +1007,7 @@ local orbitPanel = makePanel(
     right,
     "OrbitPanel",
     UDim2.new(1, 0, 0, 49),
-    UDim2.fromOffset(0, 508)
+    UDim2.fromOffset(0, 616)
 )
 
 local orbitTitle = makeLabel(
@@ -945,7 +1042,7 @@ local orbitSpeedPanel = makePanel(
     right,
     "OrbitSpeedPanel",
     UDim2.new(1, 0, 0, 49),
-    UDim2.fromOffset(0, 562)
+    UDim2.fromOffset(0, 670)
 )
 
 local orbitSpeedTitle = makeLabel(
@@ -997,7 +1094,7 @@ local cameraNoclipPanel = makePanel(
     right,
     "CameraNoclipPanel",
     UDim2.new(1, 0, 0, 49),
-    UDim2.fromOffset(0, 616)
+    UDim2.fromOffset(0, 724)
 )
 
 local cameraNoclipTitle = makeLabel(
@@ -1033,7 +1130,7 @@ local workspaceTitle = makeLabel(
     "WorkspaceTitle",
     "WORKSPACE CONTENTS / ALL MODELS",
     UDim2.new(1, 0, 0, 17),
-    UDim2.fromOffset(0, 670),
+    UDim2.fromOffset(0, 778),
     10,
     true
 )
@@ -1044,7 +1141,7 @@ local folderPanel = makePanel(
     right,
     "FolderPanel",
     UDim2.new(1, 0, 0, 116),
-    UDim2.fromOffset(0, 691)
+    UDim2.fromOffset(0, 799)
 )
 
 local function createFolderStatus(name, x, y, width)
@@ -1074,7 +1171,7 @@ local teleportButton = makeButton(
     "TeleportButton",
     "TELEPORT TO MODEL",
     UDim2.fromOffset(156, 38),
-    UDim2.fromOffset(0, 815)
+    UDim2.fromOffset(0, 923)
 )
 teleportButton.Active = false
 
@@ -1083,7 +1180,7 @@ local returnButton = makeButton(
     "ReturnToMeButton",
     "RETURN TO ME",
     UDim2.fromOffset(156, 38),
-    UDim2.fromOffset(162, 815)
+    UDim2.fromOffset(162, 923)
 )
 returnButton.Active = false
 
@@ -1092,7 +1189,7 @@ local feedbackLabel = makeLabel(
     "Feedback",
     "Select a model group to begin.",
     UDim2.new(1, 0, 0, 22),
-    UDim2.fromOffset(0, 857),
+    UDim2.fromOffset(0, 965),
     9,
     true
 )
@@ -1135,7 +1232,6 @@ local function findNPCFolder()
         "NonPlayerCharacters",
     }) do
         local folder = workspace:FindFirstChild(candidateName)
-            or workspace:FindFirstChild(candidateName, true)
 
         if folder and folder:IsA("Folder") then
             npcFolderCache = folder
@@ -1380,6 +1476,9 @@ local function scanRoot(root, rootCategory)
                         childCategory = "NPCs"
                     elseif string.lower(child.Name) == "mobs" then
                         childCategory = "Mobs"
+                    elseif string.find(string.lower(child.Name), "chest", 1, true)
+                        or string.find(string.lower(child.Name), "treasure", 1, true) then
+                        childCategory = child.Name
                     end
                 end
                 walkNestedModels(child, childCategory)
@@ -1416,6 +1515,9 @@ local function scanRoot(root, rootCategory)
                         childCategory = "NPCs"
                     elseif string.lower(child.Name) == "mobs" then
                         childCategory = "Mobs"
+                    elseif string.find(string.lower(child.Name), "chest", 1, true)
+                        or string.find(string.lower(child.Name), "treasure", 1, true) then
+                        childCategory = child.Name
                     end
                 end
 
@@ -1747,6 +1849,246 @@ local function findNearestLiveMob(maxDistance)
     local model = findAutoFarmTarget(maxDistance)
     SETTINGS.AutoFarmMethod = previousMethod
     return model
+end
+
+------------------------------------------------------------------------
+-- CHEST / G-KEY PROXIMITY PROMPT SUPPORT
+------------------------------------------------------------------------
+
+local function containsChestWord(value)
+    local lower = string.lower(tostring(value or ""))
+    return string.find(lower, "chest", 1, true) ~= nil
+        or string.find(lower, "treasure", 1, true) ~= nil
+        or string.find(lower, "loot", 1, true) ~= nil
+end
+
+local function isChestGPrompt(prompt)
+    if not prompt
+        or not prompt:IsA("ProximityPrompt")
+        or not prompt.Parent
+        or not prompt.Enabled
+        or prompt.KeyboardKeyCode ~= Enum.KeyCode.G then
+        return false
+    end
+
+    local context = prompt:GetFullName() .. " "
+        .. tostring(prompt.ActionText) .. " "
+        .. tostring(prompt.ObjectText)
+
+    return containsChestWord(context)
+end
+
+-- Maintain a lightweight prompt index instead of searching every Model's
+-- descendants repeatedly. Existing prompts are indexed once; new prompts are
+-- added and removed through Workspace descendant events.
+local chestPromptCache = setmetatable({}, {__mode = "k"})
+
+-- Connect events first so prompts spawned during the initial indexing pass are
+-- not missed. The existing Workspace walk is deferred and yields in batches;
+-- this prevents a large Pilgrammed map from blocking GUI startup.
+connectGlobal(workspace.DescendantAdded, function(instance)
+    if instance:IsA("ProximityPrompt") then
+        chestPromptCache[instance] = true
+    end
+end)
+
+connectGlobal(workspace.DescendantRemoving, function(instance)
+    if instance:IsA("ProximityPrompt") then
+        chestPromptCache[instance] = nil
+        chestPromptCooldowns[instance] = nil
+    end
+end)
+
+task.defer(function()
+    local stack = {workspace}
+    local visited = 0
+
+    while #stack > 0 and not destroyed and gui.Parent do
+        local container = table.remove(stack)
+        local children = container:GetChildren()
+
+        for _, child in ipairs(children) do
+            visited = visited + 1
+
+            if child:IsA("ProximityPrompt") then
+                chestPromptCache[child] = true
+            end
+
+            -- Traverse all descendants, but yield periodically so this index
+            -- cannot monopolize the client thread in a large Workspace.
+            if #child:GetChildren() > 0 then
+                table.insert(stack, child)
+            end
+
+            if visited % 300 == 0 then
+                task.wait()
+                if destroyed or not gui.Parent then
+                    return
+                end
+            end
+        end
+    end
+end)
+
+local function getPromptWorldPosition(prompt)
+    if not prompt or not prompt.Parent then
+        return nil
+    end
+
+    local parent = prompt.Parent
+    if parent:IsA("Attachment") then
+        return parent.WorldPosition
+    end
+    if parent:IsA("BasePart") then
+        return parent.Position
+    end
+
+    local ancestor = parent
+    while ancestor and ancestor ~= workspace do
+        if ancestor:IsA("BasePart") then
+            return ancestor.Position
+        elseif ancestor:IsA("Model") then
+            local success, pivot = pcall(function()
+                return ancestor:GetPivot()
+            end)
+            if success then
+                return pivot.Position
+            end
+        end
+        ancestor = ancestor.Parent
+    end
+
+    return nil
+end
+
+local function findChestGPrompt(maxDistance, requireActivationRange)
+    local character = player.Character
+    local root = character and character:FindFirstChild("HumanoidRootPart")
+    if not root then
+        return nil, math.huge
+    end
+
+    local closestPrompt = nil
+    local closestDistance = math.huge
+
+    -- Iterate only indexed ProximityPrompts; this remains fast even when the
+    -- Workspace contains thousands of mob and map parts.
+    for prompt in pairs(chestPromptCache) do
+        if isChestGPrompt(prompt)
+            and (chestPromptCooldowns[prompt] or 0) <= os.clock() then
+            local position = getPromptWorldPosition(prompt)
+            if position then
+                local distance = (position - root.Position).Magnitude
+                local allowedDistance = maxDistance or math.huge
+                if requireActivationRange then
+                    allowedDistance = math.min(
+                        allowedDistance,
+                        math.max(0, prompt.MaxActivationDistance)
+                    )
+                end
+
+                if distance <= allowedDistance and distance < closestDistance then
+                    closestPrompt = prompt
+                    closestDistance = distance
+                end
+            end
+        end
+    end
+
+    return closestPrompt, closestDistance
+end
+
+local function moveCharacterNearChestPrompt(prompt)
+    if not prompt or not prompt.Parent then
+        return false
+    end
+
+    local character = player.Character
+    local root = character and character:FindFirstChild("HumanoidRootPart")
+    local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+    local promptPosition = getPromptWorldPosition(prompt)
+
+    if not character or not root or not humanoid or humanoid.Health <= 0 or not promptPosition then
+        return false
+    end
+
+    local maxDistance = math.max(1, prompt.MaxActivationDistance)
+    local currentDistance = (root.Position - promptPosition).Magnitude
+    if currentDistance <= math.max(1, maxDistance - 0.5) then
+        return true
+    end
+
+    if not lastReturnPivot then
+        lastReturnPivot = character:GetPivot()
+        returnButton.Active = true
+    end
+
+    local horizontalOffset = Vector3.new(
+        root.Position.X - promptPosition.X,
+        0,
+        root.Position.Z - promptPosition.Z
+    )
+    if horizontalOffset.Magnitude < 0.05 then
+        horizontalOffset = Vector3.new(0, 0, 1)
+    else
+        horizontalOffset = horizontalOffset.Unit
+    end
+
+    local standOff = math.clamp(maxDistance * 0.45, 2, 4)
+    local destinationPosition = promptPosition
+        + horizontalOffset * standOff
+        + Vector3.new(0, 1.5, 0)
+    local destination = CFrame.lookAt(destinationPosition, promptPosition)
+    local rootToPivot = root.CFrame:ToObjectSpace(character:GetPivot())
+
+    local success = pcall(function()
+        character:PivotTo(destination * rootToPivot)
+        root.AssemblyLinearVelocity = Vector3.zero
+        root.AssemblyAngularVelocity = Vector3.zero
+    end)
+
+    return success
+end
+
+local function activateChestGPrompt(prompt)
+    if autoChestBusy or not isChestGPrompt(prompt) then
+        return false
+    end
+
+    local character = player.Character
+    local root = character and character:FindFirstChild("HumanoidRootPart")
+    local promptPosition = getPromptWorldPosition(prompt)
+    if not root or not promptPosition then
+        return false
+    end
+
+    local allowedDistance = math.max(0, prompt.MaxActivationDistance)
+    if (root.Position - promptPosition).Magnitude > allowedDistance then
+        return false
+    end
+
+    autoChestBusy = true
+    local began = pcall(function()
+        prompt:InputHoldBegin()
+    end)
+
+    if began then
+        local holdTime = math.clamp(prompt.HoldDuration, 0, 5)
+        if holdTime > 0 then
+            task.wait(holdTime)
+        else
+            task.wait(0.08)
+        end
+        if prompt.Parent then
+            pcall(function()
+                prompt:InputHoldEnd()
+            end)
+        end
+        chestPromptCooldowns[prompt] = os.clock() + SETTINGS.AutoChestPromptCooldown
+    end
+
+    autoChestBusy = false
+    return began
 end
 
 local function resolveSelectedModel(target)
@@ -2250,12 +2592,9 @@ end
 local function setCameraNoclipEnabled(enabled)
     enabled = enabled == true
     local success, err = pcall(function()
-        if enabled then
-            player.DevCameraOcclusionMode = Enum.DevCameraOcclusionMode.Invisicam
-        else
-            player.DevCameraOcclusionMode = originalCameraOcclusionMode
-                or Enum.DevCameraOcclusionMode.Zoom
-        end
+        player.DevCameraOcclusionMode = enabled
+            and Enum.DevCameraOcclusionMode.Invisicam
+            or (originalCameraOcclusionMode or Enum.DevCameraOcclusionMode.Zoom)
     end)
 
     if not success then
@@ -3055,7 +3394,8 @@ local function queueWorkspaceRootRefresh(instance)
     -- selectable / farmable model index.
     if not instance:IsA("Model")
         and not instance:IsA("BasePart")
-        and not instance:IsA("Folder") then
+        and not instance:IsA("Folder")
+        and not instance:IsA("ProximityPrompt") then
         return
     end
 
@@ -3448,6 +3788,129 @@ autoFarmButton.Activated:Connect(function()
     setAutoFarmEnabled(not autoFarmEnabled)
 end)
 
+updateAutoChestToggle = function()
+    autoChestButton.Text = autoChestEnabled and "ON" or "OFF"
+    autoChestDescription.Text = autoChestEnabled
+        and ("NEAREST CHEST / " .. tostring(SETTINGS.AutoChestRadius) .. " STUD RANGE")
+        or "FIND + APPROACH G-KEY CHEST PROMPTS"
+end
+
+updateAutoGPromptToggle = function()
+    autoGPromptButton.Text = autoGPromptEnabled and "ON" or "OFF"
+    autoGPromptDescription.Text = autoGPromptEnabled
+        and "HOLD G WHEN A CHEST PROMPT IS IN RANGE"
+        or "NEARBY G CHEST PROMPTS ONLY"
+end
+
+local function startAutoChestWorker()
+    autoChestToken = autoChestToken + 1
+    local myToken = autoChestToken
+
+    task.spawn(function()
+        while not destroyed
+            and gui.Parent
+            and myToken == autoChestToken
+            and (autoChestEnabled or autoGPromptEnabled) do
+
+            if not teleporting then
+                local maxDistance = autoChestEnabled and SETTINGS.AutoChestRadius or math.huge
+                local prompt = findChestGPrompt(maxDistance, not autoChestEnabled)
+
+                if prompt then
+                    local character = player.Character
+                    local root = character and character:FindFirstChild("HumanoidRootPart")
+                    local promptPosition = getPromptWorldPosition(prompt)
+                    local distance = root and promptPosition
+                        and (root.Position - promptPosition).Magnitude
+                        or math.huge
+
+                    if autoChestEnabled and distance > math.max(1, prompt.MaxActivationDistance - 0.5) then
+                        feedbackLabel.Text = "AUTO CHEST: APPROACHING " .. string.upper(prompt.ObjectText ~= "" and prompt.ObjectText or "CHEST")
+                        moveCharacterNearChestPrompt(prompt)
+                        task.wait(0.2)
+                    end
+
+                    if (autoChestEnabled or autoGPromptEnabled)
+                        and prompt.Parent
+                        and activateChestGPrompt(prompt) then
+                        feedbackLabel.Text = "AUTO CHEST: G PROMPT ACTIVATED"
+                    end
+                elseif autoChestEnabled then
+                    feedbackLabel.Text = "AUTO CHEST: SEARCHING FOR G-KEY CHESTS"
+                end
+            end
+
+            task.wait(SETTINGS.AutoChestSearchInterval)
+        end
+    end)
+end
+
+local function setAutoChestEnabled(enabled)
+    enabled = enabled == true
+    if autoChestEnabled == enabled then
+        return
+    end
+
+    if enabled then
+        if teleporting then
+            feedbackLabel.Text = "WAIT UNTIL TELEPORT FINISHES"
+            return
+        end
+
+        -- AutoChest takes movement control from mob tracking / AutoFarm.
+        if autoFarmEnabled then
+            setAutoFarmEnabled(false)
+        end
+        teleportModeEnabled = false
+        mobSearchToken = mobSearchToken + 1
+        if mountState then
+            stopMount()
+        end
+
+        local character = player.Character
+        if not character or not character.Parent then
+            feedbackLabel.Text = "CHARACTER NOT LOADED"
+            return
+        end
+        if not lastReturnPivot then
+            lastReturnPivot = character:GetPivot()
+            returnButton.Active = true
+        end
+    end
+
+    autoChestEnabled = enabled
+    SETTINGS.AutoChestEnabled = autoChestEnabled
+    updateAutoChestToggle()
+
+    autoChestToken = autoChestToken + 1
+    if autoChestEnabled or autoGPromptEnabled then
+        startAutoChestWorker()
+    else
+        feedbackLabel.Text = "AUTO CHEST DISABLED"
+    end
+end
+
+local function setAutoGPromptEnabled(enabled)
+    autoGPromptEnabled = enabled == true
+    SETTINGS.AutoGPromptEnabled = autoGPromptEnabled
+    updateAutoGPromptToggle()
+
+    autoChestToken = autoChestToken + 1
+    if autoChestEnabled or autoGPromptEnabled then
+        startAutoChestWorker()
+    else
+        feedbackLabel.Text = "AUTO G PROMPT DISABLED"
+    end
+end
+
+autoChestButton.Activated:Connect(function()
+    setAutoChestEnabled(not autoChestEnabled)
+end)
+
+autoGPromptButton.Activated:Connect(function()
+    setAutoGPromptEnabled(not autoGPromptEnabled)
+end)
+
 local function startSelectedMobSearch()
     mobSearchToken = mobSearchToken + 1
     local myToken = mobSearchToken
@@ -3555,6 +4018,13 @@ returnButton.Activated:Connect(function()
 
     teleportModeEnabled = false
     mobSearchToken = mobSearchToken + 1
+    autoChestEnabled = false
+    SETTINGS.AutoChestEnabled = false
+    autoGPromptEnabled = false
+    SETTINGS.AutoGPromptEnabled = false
+    autoChestToken = autoChestToken + 1
+    updateAutoChestToggle()
+    updateAutoGPromptToggle()
     autoFarmEnabled = false
     autoFarmToken = autoFarmToken + 1
     farmCurrentTarget = nil
@@ -3686,6 +4156,12 @@ local function cleanup()
     mobSearchToken = mobSearchToken + 1
     autoFarmEnabled = false
     autoFarmToken = autoFarmToken + 1
+    autoChestEnabled = false
+    autoGPromptEnabled = false
+    SETTINGS.AutoChestEnabled = false
+    SETTINGS.AutoGPromptEnabled = false
+    autoChestToken = autoChestToken + 1
+    autoChestBusy = false
     farmCurrentTarget = nil
     lastReturnPivot = nil
     deactivateEquippedTool()
@@ -3735,8 +4211,15 @@ connectGlobal(player.CharacterAdded, function()
     mobSearchToken = mobSearchToken + 1
     autoFarmEnabled = false
     autoFarmToken = autoFarmToken + 1
+    autoChestEnabled = false
+    autoGPromptEnabled = false
+    SETTINGS.AutoChestEnabled = false
+    SETTINGS.AutoGPromptEnabled = false
+    autoChestToken = autoChestToken + 1
     farmCurrentTarget = nil
     updateAutoFarmToggle()
+    updateAutoChestToggle()
+    updateAutoGPromptToggle()
     lastReturnPivot = nil
     returnButton.Active = false
     if mountState then
@@ -3761,8 +4244,23 @@ updateOrbitToggle()
 updateCameraNoclipToggle()
 updateAutoFarmMethodUI()
 updateAutoFarmToggle()
-updateWorkspaceStatus()
+updateAutoChestToggle()
+updateAutoGPromptToggle()
+main.Visible = true
+gui.Enabled = true
 updateSelectedStatus()
+
+-- Do the folder availability check after the GUI has had a chance to render.
+task.defer(function()
+    if destroyed or not gui.Parent then
+        return
+    end
+    local ok, err = pcall(updateWorkspaceStatus)
+    if not ok then
+        warn("[Pilgrammedscript] Workspace status refresh failed: " .. tostring(err))
+        feedbackLabel.Text = "GUI READY / WORKSPACE SCAN WARNING"
+    end
+end)
 
 -- Event-driven Workspace spawn detection handles new Models/Parts quickly; this loop is the periodic reconciliation fallback.
 task.spawn(function()
@@ -3774,14 +4272,18 @@ task.spawn(function()
             lastFullScan = os.clock()
         end
 
-        refreshModelCache(fullScan)
+        local scanOk, scanErr = pcall(refreshModelCache, fullScan)
+        if not scanOk then
+            warn("[Pilgrammedscript] Model scan failed: " .. tostring(scanErr))
+            feedbackLabel.Text = "MODEL SCAN ERROR - GUI IS STILL RUNNING"
+        end
 
         if destroyed or not gui.Parent then
             break
         end
 
-        updateWorkspaceStatus()
-        updateSelectedStatus()
+        pcall(updateWorkspaceStatus)
+        pcall(updateSelectedStatus)
 
         if modelCache.Signature ~= lastSignature then
             lastSignature = modelCache.Signature
