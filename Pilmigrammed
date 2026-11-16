@@ -78,6 +78,30 @@ local function setStartupStatus(message)
     end
 end
 
+-- Report the first initialization stage immediately. The previous build only
+-- changed this banner after the settings and catalog setup had already run.
+setStartupStatus("loading core settings and autofarm pivots")
+task.wait()
+
+-- Keep the supplied world pivot exactly. It is a real destination used by the
+-- movement/targeting logic; do not remove or replace the user's location data.
+local npcPivotOk, npcWorldPivot = pcall(function()
+    return CFrame.new(
+        869.860535,
+        20.5000019,
+        -352.986267,
+        1, 0, 0,
+        0, 1, 0,
+        0, 0, 1
+    )
+end)
+if not npcPivotOk then
+    local pivotError = "NPC/autofarm world pivot could not be created: " .. tostring(npcWorldPivot)
+    setStartupStatus("ERROR - " .. pivotError)
+    warn("[Pilgrammedscript] " .. pivotError)
+    return
+end
+
 local SETTINGS = {
     GUIWidth = 840,
     GUIHeight = 660,
@@ -102,14 +126,7 @@ local SETTINGS = {
     ESPRefreshRate = 0.75,
     MaxESPHighlights = 30,
 
-    NPCWorldPivot = CFrame.new(
-        869.860535,
-        20.5000019,
-        -352.986267,
-        1, 0, 0,
-        0, 1, 0,
-        0, 0, 1
-    ),
+    NPCWorldPivot = npcWorldPivot,
 
     NPCBelowDistance = 10,
     NPCRiseDuration = 3.5,
@@ -157,6 +174,8 @@ local COLORS = {
     Gray = Color3.fromRGB(175, 175, 175),
 }
 
+setStartupStatus("core settings and world pivot ready")
+task.wait()
 
 ------------------------------------------------------------------------
 -- PREDEFINED PILGRAMMED CATALOGS
@@ -612,9 +631,13 @@ local function parseStaticDestinations(raw, pathPrefix)
     local lineNumber = 0
     for line in string.gmatch(raw, "[^\r\n]+") do
         lineNumber = lineNumber + 1
-        if lineNumber % 50 == 0 then
-            setStartupStatus("loading " .. tostring(pathPrefix) .. " coordinates: " .. tostring(lineNumber))
-            task.wait() -- yield periodically so the client can render and avoid a long synchronous block
+        if lineNumber % 20 == 0 then
+            setStartupStatus(
+                "loading " .. tostring(pathPrefix)
+                    .. " locations: " .. tostring(lineNumber)
+                    .. " lines / " .. tostring(#entries) .. " valid"
+            )
+            task.wait(0.03) -- let the banner render while large destination catalogs are parsed
         end
         local name, info, rawNumbers = string.match(line, "^(.-)|(.-)|(.*)$")
         if name and rawNumbers then
@@ -660,6 +683,10 @@ local function parseStaticDestinations(raw, pathPrefix)
         end
     end
 
+    setStartupStatus(
+        tostring(pathPrefix) .. " locations ready: " .. tostring(#entries)
+    )
+    task.wait()
     return entries
 end
 
