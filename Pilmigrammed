@@ -49,7 +49,9 @@ do
     diagnosticLabel.Name = "Status"
     diagnosticLabel.AnchorPoint = Vector2.new(0.5, 0)
     diagnosticLabel.Position = UDim2.new(0.5, 0, 0, 12)
-    diagnosticLabel.Size = UDim2.fromOffset(430, 34)
+    diagnosticLabel.Size = UDim2.fromOffset(620, 42)
+    diagnosticLabel.TextWrapped = true
+    diagnosticLabel.TextXAlignment = Enum.TextXAlignment.Center
     diagnosticLabel.BackgroundColor3 = Color3.fromRGB(12, 12, 12)
     diagnosticLabel.BackgroundTransparency = 0.08
     diagnosticLabel.BorderSizePixel = 0
@@ -171,6 +173,8 @@ local function splitCatalog(raw)
     return result
 end
 
+setStartupStatus("loading catalog lists")
+task.wait() -- allow the status banner to render before data initialization
 local CATALOGS = {
     Bosses = splitCatalog([=[
 50 Bandits
@@ -593,6 +597,9 @@ Zinc
 ]=]),
 }
 
+setStartupStatus("catalog lists ready; loading destination coordinates")
+task.wait()
+
 ------------------------------------------------------------------------
 -- STATIC WORLD DESTINATIONS
 -- Coordinates are loaded from the supplied location catalog. These are
@@ -602,30 +609,53 @@ local function parseStaticDestinations(raw, pathPrefix)
     local entries = {}
     local nameCounts = {}
 
+    local lineNumber = 0
     for line in string.gmatch(raw, "[^\r\n]+") do
+        lineNumber = lineNumber + 1
+        if lineNumber % 50 == 0 then
+            setStartupStatus("loading " .. tostring(pathPrefix) .. " coordinates: " .. tostring(lineNumber))
+            task.wait() -- yield periodically so the client can render and avoid a long synchronous block
+        end
         local name, info, rawNumbers = string.match(line, "^(.-)|(.-)|(.*)$")
         if name and rawNumbers then
             local values = {}
             for token in string.gmatch(rawNumbers, "[^,]+") do
                 local value = tonumber(string.gsub(token, "^%s*(.-)%s*$", "%1"))
-                if value ~= nil then
+                if value ~= nil and value == value and value > -math.huge and value < math.huge then
                     table.insert(values, value)
                 end
             end
 
             if #values == 12 then
-                nameCounts[name] = (nameCounts[name] or 0) + 1
-                local index = nameCounts[name]
-                local detail = info ~= "" and info or "WORLD DESTINATION"
-                table.insert(entries, {
-                    Name = name,
-                    Info = detail,
-                    CFrame = CFrame.new(table.unpack(values)),
-                    Path = string.upper(pathPrefix) .. " / " .. name .. " / " .. detail
-                        .. " / POINT " .. string.format("%02d", index),
-                })
+                -- Avoid table.unpack here: some executor Lua environments replace
+                -- or omit it. One malformed transform should never abort all UI startup.
+                local frameOk, destinationFrame = pcall(function()
+                    return CFrame.new(
+                        values[1], values[2], values[3],
+                        values[4], values[5], values[6],
+                        values[7], values[8], values[9],
+                        values[10], values[11], values[12]
+                    )
+                end)
+
+                if frameOk then
+                    nameCounts[name] = (nameCounts[name] or 0) + 1
+                    local index = nameCounts[name]
+                    local detail = info ~= "" and info or "WORLD DESTINATION"
+                    table.insert(entries, {
+                        Name = name,
+                        Info = detail,
+                        CFrame = destinationFrame,
+                        Path = string.upper(pathPrefix) .. " / " .. name .. " / " .. detail
+                            .. " / POINT " .. string.format("%02d", index),
+                    })
+                else
+                    warn("[Pilgrammedscript] Skipped destination transform at line " .. tostring(lineNumber)
+                        .. " (" .. tostring(name) .. "): " .. tostring(destinationFrame))
+                end
             else
-                warn("[Pilgrammedscript] Skipped invalid static destination: " .. tostring(name))
+                warn("[Pilgrammedscript] Skipped invalid static destination at line "
+                    .. tostring(lineNumber) .. ": " .. tostring(name))
             end
         end
     end
@@ -1095,6 +1125,8 @@ Arena Boss|AREA BOSS|4290.09521, -410.03299, 3455.40576, -0.578096509, -0.083200
 ]=], "AREA BOSS"),
 }
 
+setStartupStatus("destination coordinates ready; building indexes")
+task.wait()
 local ORE_ROUTE_NAMES = {}
 local ORE_ROUTE_INFO = {}
 do
@@ -1108,6 +1140,8 @@ do
     end
 end
 
+setStartupStatus("loading map catalog")
+task.wait()
 local MAP_PATH_CATALOG = splitCatalog([=[
 Barn
 Beach
@@ -1213,6 +1247,8 @@ Volcano/Presets
 Volcano/Swords
 ]=])
 
+setStartupStatus("catalog data ready; preparing interface controls")
+task.wait()
 local catalogNavBar = nil
 local catalogPanel = nil
 local catalogCurrentSection = "Chests"
@@ -1393,6 +1429,8 @@ local function makePanel(parent, name, size, position)
 end
 
 setStartupStatus("creating main interface")
+task.wait()
+print("[Pilgrammedscript] Pre-GUI initialization completed; creating ScreenGui now.")
 
 local gui = create("ScreenGui", {
     Name = GUI_NAME,
