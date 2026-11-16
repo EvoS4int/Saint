@@ -14,11 +14,37 @@ end
 
 local player = Players.LocalPlayer
 while not player do
-    task.wait()
+    task.wait(0.1)
     player = Players.LocalPlayer
 end
 
-local playerGui = player:WaitForChild("PlayerGui")
+local playerGui = player:WaitForChild("PlayerGui", 15)
+if not playerGui then
+    warn("[Pilgrammedscript] PlayerGui was not available after 15 seconds. Re-run after the game finishes loading.")
+    return
+end
+
+-- Prefer the executor's dedicated UI container when one is available.
+-- Fall back to PlayerGui so the same file still works as a normal LocalScript.
+local guiParent = playerGui
+local executorGuiGetter = nil
+if type(gethui) == "function" then
+    executorGuiGetter = gethui
+elseif type(get_hidden_gui) == "function" then
+    executorGuiGetter = get_hidden_gui
+end
+
+if executorGuiGetter then
+    local ok, hiddenGui = pcall(executorGuiGetter)
+    if ok and typeof(hiddenGui) == "Instance" then
+        guiParent = hiddenGui
+        print("[Pilgrammedscript] Executor UI container detected.")
+    else
+        warn("[Pilgrammedscript] Executor UI container lookup failed; using PlayerGui.")
+    end
+else
+    print("[Pilgrammedscript] No executor UI-container API detected; using PlayerGui.")
+end
 
 local SETTINGS = {
     GUIWidth = 840,
@@ -1214,11 +1240,13 @@ local stopMount
 local GUI_NAME = "Pilgrammedscript"
 local GUI_CHILD_PREFIX = "Pilgrammedscript_"
 
--- Remove both the previous GUI name and this branded GUI before rebuilding.
-for _, oldName in ipairs({"MobsSearchGui", GUI_NAME}) do
-    local oldGui = playerGui:FindFirstChild(oldName)
-    if oldGui then
-        oldGui:Destroy()
+-- Remove an older copy from either supported UI container before rebuilding.
+for _, root in ipairs({playerGui, guiParent}) do
+    for _, oldName in ipairs({"MobsSearchGui", GUI_NAME}) do
+        local oldGui = root:FindFirstChild(oldName)
+        if oldGui then
+            oldGui:Destroy()
+        end
     end
 end
 
@@ -1228,12 +1256,30 @@ local function create(className, properties, parent)
         if property == "Name" and typeof(value) == "string"
             and value ~= GUI_NAME
             and string.sub(value, 1, #GUI_CHILD_PREFIX) ~= GUI_CHILD_PREFIX then
-            object[property] = GUI_CHILD_PREFIX .. value
-        else
+            value = GUI_CHILD_PREFIX .. value
+        end
+
+        local propertyOk, propertyErr = pcall(function()
             object[property] = value
+        end)
+        if not propertyOk then
+            warn("[Pilgrammedscript] UI property failed: " .. className .. "." .. property .. " / " .. tostring(propertyErr))
         end
     end
-    object.Parent = parent
+
+    local parentOk, parentErr = pcall(function()
+        object.Parent = parent
+    end)
+    if not parentOk and parent ~= playerGui then
+        warn("[Pilgrammedscript] UI parent failed; retrying PlayerGui: " .. tostring(parentErr))
+        parentOk, parentErr = pcall(function()
+            object.Parent = playerGui
+        end)
+    end
+    if not parentOk then
+        warn("[Pilgrammedscript] Could not parent " .. className .. ": " .. tostring(parentErr))
+    end
+
     return object
 end
 
@@ -1323,7 +1369,8 @@ local gui = create("ScreenGui", {
     DisplayOrder = 1000000,
     IgnoreGuiInset = true,
     ZIndexBehavior = Enum.ZIndexBehavior.Global,
-}, playerGui)
+}, guiParent)
+print("[Pilgrammedscript] ScreenGui created. Parent: " .. (guiParent == playerGui and "PlayerGui" or "executor UI container"))
 
 local main = create("Frame", {
     Name = "Main",
@@ -7491,20 +7538,24 @@ end -- end of startLogic()
 -- Keep startup result variables scoped so they do not consume permanent
 -- top-level local slots in this large integrated script.
 do
+    print("[Pilgrammedscript] Starting catalog browser...")
     local browserResult = {pcall(startCatalogBrowser)}
     if not browserResult[1] then
         warn("[Pilgrammedscript] Catalog browser startup failed: " .. tostring(browserResult[2]))
+    else
+        print("[Pilgrammedscript] Catalog browser ready.")
     end
 end
 
 do
+    print("[Pilgrammedscript] Starting main interface logic...")
     local logicResult = {pcall(startLogic)}
     if logicResult[1] then
         print("[Pilgrammedscript] Loaded successfully.")
     else
         warn("[Pilgrammedscript] Startup error: " .. tostring(logicResult[2]))
         if feedbackLabel and feedbackLabel.Parent then
-            feedbackLabel.Text = "STARTUP ERROR - CHECK OUTPUT"
+            feedbackLabel.Text = "STARTUP ERROR - CHECK EXECUTOR CONSOLE"
         end
     end
 end
