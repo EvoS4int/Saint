@@ -56,10 +56,10 @@ local SETTINGS = {
     AutoClickInterval = 0.2,
     AutoClickPulseDuration = 0.05,
 
-    -- Mobs / NPCs are rescanned this often (seconds)
+    -- Cached target status refresh interval; deep scans are event-driven.
     CacheRefreshRate = 1.5,
-    -- Every other Workspace folder (Ores, Chests, Map, ...) is rescanned this often
-    FullScanRate = 6,
+    -- Slow reconciliation fallback for the targeted Mobs/NPC roots.
+    FullScanRate = 15,
     MountUpdateRate = 1 / 60,
     MobSearchInterval = 0.4,      -- retry the selected mob group while teleport mode is ON
     AutoFarmRadius = 150,         -- only choose mobs within this many studs
@@ -72,8 +72,8 @@ local SETTINGS = {
     AutoChestSearchInterval = 0.65,
     AutoChestPromptCooldown = 25,
 
-    -- Search everything inside every Workspace folder
-    IncludeLooseParts = true,   -- also list single Parts (ores, chests, etc.) that are not inside a Model
+    -- Legacy model finder indexes only the dedicated Mobs/NPC folders.
+    IncludeLooseParts = true,
     MaxDropdownRows = 80,       -- max rows shown in the list (keeps the UI fast)
     AutoSearchDelay = 0.2,      -- seconds after you stop typing before the list updates
     OtherClearance = 6,         -- studs above the target when teleporting to non-mob / non-NPC things
@@ -87,6 +87,448 @@ local COLORS = {
     White = Color3.fromRGB(255, 255, 255),
     Gray = Color3.fromRGB(175, 175, 175),
 }
+
+
+------------------------------------------------------------------------
+-- PREDEFINED PILGRAMMED CATALOGS
+-- These strings are copied exactly from the supplied catalog specification.
+------------------------------------------------------------------------
+local function splitCatalog(raw)
+    local result = {}
+    for line in string.gmatch(raw, "[^\r\n]+") do
+        local value = string.gsub(line, "^%s*(.-)%s*$", "%1")
+        if value ~= "" then
+            table.insert(result, value)
+        end
+    end
+    return result
+end
+
+local CATALOGS = {
+    Bosses = splitCatalog([=[
+50 Bandits
+Abdominal Snowman
+Archmage
+Bigfish
+Caesar
+Captain Whelk
+Cata
+Creepy Crab
+Crude Knight Reznor
+Democan
+False Believer
+Father Sajurn
+Fenrir
+Giant Pigface
+Golden Knight
+Granny
+Grave Treelad
+Highway Son
+Hobo
+Ice King
+Jim
+Kai Guy
+Kai Lazurai
+King Sandpod
+Lost Guys
+Magma Turtle
+Maynard
+Misgiving
+Mondo Squid
+Mr Tokin
+Mr. Normal
+N
+Nadurtha
+Neptune & Ball
+Old Fart
+Pop Off Pirate
+Primordial Red
+Prism Troll
+Pro Thief
+Psychocrab
+Purple Shark
+Ravenous Loan Shark
+Sailord
+Shinobi King
+Shock Marauder
+Snow Cultist
+Stone Collector
+That Whale
+The Patris
+The Skeleton
+Thief King
+Unfair Fight
+Viperhead
+Who Is This
+Yalgaroth
+]=]),
+    Enemies = splitCatalog([=[
+50 Bandits
+Abdominal Snowman
+Gemini Eye
+Mortal Manifestation
+Snowslug
+Anti-Thief
+Anti-Thief Artillery
+Apathy Demon
+Archduke
+Archmage
+Artilleryman
+Auditor
+Baby Turtle
+Bigfish
+Black Slime
+Blackened Skeleton
+Blue Slime
+Boomer
+Boulder
+Boulder Knight
+Brain Buddie
+Brain Coral
+Brown Bear
+Bushwalker
+Cactus Man
+Caesar
+Candle Knight
+Cannoneer
+Captain Whelk
+Cata
+Chalkman
+Choccy Bean Pebble
+Clerick
+Cloaked Demon
+Copper Ant
+Coral Man
+Crabland
+Creepy Crab
+Crude Knight Reznor
+Cruel Frog
+Crystalbud
+Cultist
+Daedalus Drone
+Delaware Knight
+Democan
+Dreadful Imp
+Dune Enforcer
+Dune Gunner
+E'dorroc
+Eggie
+Elite Defender
+Empyrean Knight
+Eye Fly
+Eye Spy
+Eye’ll Help
+False Believer
+Fat Dude
+Father Sajurn
+Fenrir
+Frigid Soldier
+Froglo
+Frost Assassin
+Giant Pigface
+Glutto
+Golden Knight
+Granny
+Graphite Knights
+Grave Treelad
+Green Slime
+Gummy Bear
+Handlehouse
+Hardboiled Eggie
+Highland Warden
+Highway Son
+Hobo
+Hunter
+Icarus drone
+Ice Golem
+Ice King
+Jellyfish
+Jim
+Kai Guy
+Kai Lazurai
+King Sandpod
+Lost Guys
+Magma Turtle
+Marauder
+Maynard
+Mech Dummy
+Mecreep
+Melterinio
+Mercenary
+Meteor Enemies
+Mini Bear
+Mini Thief
+Mirror Eggie
+Mirror Tangerini
+Misgiving
+Mondo Squid
+Mr Tokin
+Mr. Normal
+Muk
+Mummy
+Museum Guard
+Mystery Worm
+N
+N Copy
+Nadurtha
+Nefarious Squid
+Neptune & Ball
+Ogre
+Old Fart
+Ore Pebble
+Pan-Ettone Guard
+Pebble
+Pink Slime
+Polar Bear
+Pop Off Pirate
+Primordial Red
+Prism Troll
+Pro Thief
+Psychocrab
+Purple Shark
+Radiogrub
+Raider
+Raider Captain
+Raider Ranger
+Ranger Knight
+Ravenous Loan Shark
+Rotten Diver
+Royal Ogre
+Ruffian
+Rutherford
+Sailord
+Samurai
+Sandpod
+Sandpod Eggs
+Sandpod Larva
+Scarecrow (Enemy)
+Sewer Vampire
+Shark
+Shinobi King
+Shock Marauder
+Sizzling Slime
+Skeleton Mania
+Skeleton Warrior
+Snow Cultist
+Spectre
+Spiker
+Stone Collector
+Stray
+Stray Oracle
+Substantial Sizzling Slime
+Swashbuckler
+Ta'natnoc
+Tangerini
+Test Dummy
+That Whale
+The Jailor
+The Patris
+The Royal King
+The Skeleton
+Thief
+Thief King
+Treelad
+Twigface
+Twigwrithe
+Unfair Fight
+Unspeakable Imp
+Urchin
+Viperhead
+Void Knight
+Who Is That
+Who Is This
+Wicked Witch
+Yalgaroth
+Yeti
+Zombie
+]=]),
+    Locations = splitCatalog([=[
+Abandoned Lighthouse
+Atlantean Plane I
+Battered Wilderness
+Bear Island
+Big Bay
+Björn Cave
+Blackened Cove
+Blistering Quarry
+Canvas of The Golden Vista
+Chaos Hideout
+Chateau D'Sewage
+Rifts/Chemical Realm
+City Hill Zone
+Cloud City
+Cloud Wilds
+Cobalt Cavern
+Cold Cliffside
+Cold Trail
+Condemned Passage
+Cruel Caverns
+C̵̻͈͠Ȕ̴͚R̵̛͕̥Ê̷̛̯͚͍D̵͙̐̒ ̸̰̈́̍͜M̴̩̱̈́̃́Ȍ̴̡̫̳N̶̪̉̿͒K̸̡͍̭͂̅͌E̶͈̟͆͐̔Ý̷͇̝͍͛
+Darkgreen Retreat
+Dead Man's Grotto
+Deadly Swamp
+Deep Desert
+Deep Desert Caverns
+Delaware
+Desert of Foreboding Terror
+Desert of Tremulous Dreams
+Deserted Paradise
+Dojo's Approach
+Dueling Arena
+Eggroost Observatory
+Elite Barracks
+Enchanted Island
+Estascosas Isle
+Field
+Fishing Settlement
+Forest
+Forgotten Village
+Frozen Cathedral
+Frozen Cave
+Glorious Water Tunnels
+Graham's Peak
+Ice Palace
+Isle of the Recital
+Junk Pits
+Kai Battlegrounds
+Land of de Billionaires
+Land of Newoldandmore
+Legacy of the Legion
+Lever room
+Lichenshire
+Limit Summit
+LoFi-Island
+Rifts/Mirror World
+Morning Hollow
+Motorway
+Mountain Basin
+Mountain Outpost
+Mountain Peak
+Mt. The Sky's The Limit
+Rifts/Museum
+MYSTERY STORE
+Northern Labyrinth
+Pale Island
+Pan-Ettone
+Paper Cave
+Patchland Grove
+Peaceful Jungle
+Pigface Ruins
+Pillars of Salt
+Pogo Path
+Portals
+Reaper's Grove
+Reborn Island
+Roberto's Island
+Royal Ogre Woods
+Ruined Solemn City
+Scavenger's Place
+Rifts/Shapeworld
+Shrine of Samurais
+Silent Sanctuary
+Sinister Sea
+Sinister Shore
+Sky Battlegrounds
+Stonesurgeon
+Strange Chasm
+Sweetberry Catacombs
+Tailfish Island
+Rifts/Tektite
+Temple of Foreboding Terror
+The Backdoor
+The Big Iron
+The Crater
+The Distance
+The Eastern Sea
+The Eggroost
+The Game
+The Gap In The Whole Wall
+The Golden Realm
+The Golden Sewer
+The King's Den
+The Northern Sea
+The Patch of Delight
+The Prairie
+The Redundant Desert
+The Road
+The Royal Sewers
+The Snow Highlands
+The Solemn City
+The Suslands
+The Upside Down Sky
+The Western Sea
+The Winter
+Tower of Dylaine
+Unknown Lab
+Vermeil Village
+Vernice
+Volcano
+Wind Island
+Wo'ur Bo'uh
+Wondrous Factory
+World of Tokens
+]=]),
+    Shops = splitCatalog([=[
+Archer
+Betsy
+Billy
+Clever
+Farlami
+Fimbul
+Friendly Witch
+Galon
+Gerald
+Gorlan
+Granatum
+Hobo
+Jared
+Kai Devai
+Kennit
+Liar
+Limo
+Lorgan
+Lunge
+MANAGER SUPREME
+Mela
+Mira
+Mr. Pumpkino
+Nebraska
+Odd Sculpture
+Oglorn
+Pomme
+Potcup
+Pwnsalot
+Rafaes
+Sailord's Brother
+Simon
+The Duke of Rocks
+Toolmark
+Verdant
+Vergil
+Wess
+William
+]=]),
+    Ores = splitCatalog([=[
+Brass
+Bronze
+Copper
+Demetal
+Diamond
+Emerald
+Iron
+Mithril
+Ruby
+Sapphire
+Silver
+Sulfur
+Tin
+Zinc
+]=]),
+}
+
+local catalogNavBar = nil
+local catalogPanel = nil
+local catalogCurrentSection = "Workspace"
 
 local selectedTarget = nil
 local teleporting = false
@@ -362,7 +804,7 @@ end)
 local left = create("Frame", {
     Name = "LeftPanel",
     Size = UDim2.fromOffset(298, 380),
-    Position = UDim2.fromOffset(12, 54),
+    Position = UDim2.fromOffset(12, 90),
     BackgroundTransparency = 1,
 }, main)
 
@@ -504,8 +946,8 @@ local modelStatus = makeLabel(
 
 local right = create("ScrollingFrame", {
     Name = "RightPanel",
-    Size = UDim2.fromOffset(322, 572),
-    Position = UDim2.fromOffset(324, 54),
+    Size = UDim2.fromOffset(322, 536),
+    Position = UDim2.fromOffset(324, 90),
     BackgroundTransparency = 1,
     BorderSizePixel = 0,
     ScrollBarThickness = 4,
@@ -546,10 +988,20 @@ local function setMinimized(minimized)
     if isMinimized then
         left.Visible = false
         right.Visible = false
+        if catalogNavBar then catalogNavBar.Visible = false end
+        if catalogPanel then catalogPanel.Visible = false end
         minimizeButton.Text = "+"
     else
-        left.Visible = true
-        right.Visible = true
+        if catalogNavBar then catalogNavBar.Visible = true end
+        if catalogCurrentSection == "Automation" then
+            left.Visible = true
+            right.Visible = true
+            if catalogPanel then catalogPanel.Visible = false end
+        else
+            left.Visible = false
+            right.Visible = false
+            if catalogPanel then catalogPanel.Visible = true end
+        end
         minimizeButton.Text = "—"
     end
 
@@ -1198,6 +1650,998 @@ feedbackLabel.TextXAlignment = Enum.TextXAlignment.Center
 ------------------------------------------------------------------------
 -- LOGIC
 --
+------------------------------------------------------------------------
+-- LAZY CATALOG BROWSER
+-- Uses the exact catalogs above and only scans the currently requested roots.
+------------------------------------------------------------------------
+local function startCatalogBrowser()
+    local TextService = game:GetService("TextService")
+    local browserDestroyed = false
+    local sectionByKey = {}
+    local sectionStates = {}
+    local categoryCache = {}
+    local scanning = {}
+    local rescanQueued = {}
+    local watchedRoots = {}
+    local visitedSections = {}
+    local refreshTimers = {}
+    local scheduleCategoryRefresh
+    local refreshCategory
+    local currentCategory = "Workspace"
+    local currentName = nil
+    local currentEntry = nil
+    local namePageLimit = 55
+    local instancePageLimit = 35
+    local namePage = 1
+    local instancePage = 1
+    local maxNodesPerScan = 10000
+    local refreshDebounce = 0.22
+    local farmStates = {
+        Ores = {Enabled = false, Token = 0, Name = nil, Target = nil},
+        Bosses = {Enabled = false, Token = 0, Name = nil, Target = nil},
+    }
+
+    local function makeSet(values)
+        local set = {}
+        for _, value in ipairs(values or {}) do
+            set[value] = true
+        end
+        return set
+    end
+
+    local definitions = {
+        {Key = "Workspace", Label = "WORKSPACE", Mode = "workspace"},
+        {Key = "Ores", Label = "ORES", Catalog = CATALOGS.Ores, Roots = {"Ores"}, Mode = "ore"},
+        {Key = "Zones", Label = "ZONES", Roots = {"Zones"}, Mode = "dynamic"},
+        {Key = "Maps", Label = "MAPS", Roots = {"Map", "Maps"}, Mode = "dynamic"},
+        {Key = "Mirrors", Label = "MIRRORS", Roots = {"Mirrors"}, Mode = "dynamic"},
+        {Key = "Locations", Label = "LOCATIONS", Catalog = CATALOGS.Locations,
+            Roots = {"Locations", "Areas", "TeleportPoints"}, FallbackRoots = {"Map", "Maps"}, Mode = "location"},
+        {Key = "Mobs", Label = "MOBS", Catalog = CATALOGS.Enemies, Roots = {"Mobs", "Enemies"}, Mode = "character"},
+        {Key = "NPCs", Label = "NPCS", Roots = {"NPCs", "NPC", "NonPlayerCharacters"}, Mode = "npc"},
+        {Key = "GoldChests", Label = "GOLD CHESTS", Roots = {"GoldChests"}, Mode = "dynamic"},
+        {Key = "Chests", Label = "CHESTS", Roots = {"Chests"}, Mode = "dynamic"},
+        {Key = "ChestSpawns", Label = "CHEST SPAWNS", Roots = {"ChestSpawns"}, Mode = "dynamic"},
+        {Key = "Bushes", Label = "BUSHES", Roots = {"Bushes"}, Mode = "dynamic"},
+        {Key = "Beds", Label = "BEDS", Roots = {"Beds"}, Mode = "dynamic"},
+        {Key = "Bosses", Label = "BOSSES", Catalog = CATALOGS.Bosses, Roots = {"Bosses", "Mobs", "Enemies"}, Mode = "boss"},
+        {Key = "Shops", Label = "SHOPS", Catalog = CATALOGS.Shops,
+            Roots = {"Shops", "ShopNPCs", "NPCs", "NPC", "NonPlayerCharacters"}, Mode = "shop"},
+        {Key = "Misc", Label = "MISC", Mode = "misc"},
+    }
+
+    for _, definition in ipairs(definitions) do
+        sectionByKey[definition.Key] = definition
+        definition.CatalogSet = makeSet(definition.Catalog)
+        sectionStates[definition.Key] = {Roots = {}, ByName = {}, Names = {}, RootSummary = "NOT SCANNED"}
+    end
+
+    local nav = create("ScrollingFrame", {
+        Name = "CatalogNavigation",
+        Size = UDim2.new(1, -20, 0, 34),
+        Position = UDim2.fromOffset(10, 49),
+        BackgroundColor3 = COLORS.Panel,
+        BorderSizePixel = 0,
+        ScrollBarThickness = 2,
+        ScrollBarImageColor3 = COLORS.Gray,
+        ScrollingDirection = Enum.ScrollingDirection.X,
+        AutomaticCanvasSize = Enum.AutomaticSize.X,
+        CanvasSize = UDim2.new(0, 0, 0, 0),
+        ClipsDescendants = true,
+        ZIndex = 30,
+    }, main)
+    addCorner(nav, 7)
+    addStroke(nav, 0.48, 1)
+    create("UIPadding", {
+        PaddingLeft = UDim.new(0, 6),
+        PaddingRight = UDim.new(0, 6),
+        PaddingTop = UDim.new(0, 3),
+        PaddingBottom = UDim.new(0, 3),
+    }, nav)
+    create("UIListLayout", {
+        FillDirection = Enum.FillDirection.Horizontal,
+        SortOrder = Enum.SortOrder.LayoutOrder,
+        Padding = UDim.new(0, 5),
+    }, nav)
+
+    local panel = makePanel(main, "CatalogPanel", UDim2.new(1, -24, 1, -100), UDim2.fromOffset(12, 90))
+    panel.Visible = true
+
+    local sectionTitle = makeLabel(panel, "CatalogSectionTitle", "WORKSPACE", UDim2.new(1, -20, 0, 22), UDim2.fromOffset(10, 8), 13)
+    sectionTitle.Font = Enum.Font.GothamBold
+
+    local searchBox = create("TextBox", {
+        Name = "CatalogSearchBox",
+        Size = UDim2.fromOffset(235, 30),
+        Position = UDim2.fromOffset(10, 37),
+        BackgroundColor3 = COLORS.Element,
+        BorderSizePixel = 0,
+        Text = "",
+        PlaceholderText = "Search this section...",
+        PlaceholderColor3 = COLORS.Gray,
+        TextColor3 = COLORS.White,
+        TextSize = 10,
+        Font = Enum.Font.Gotham,
+        ClearTextOnFocus = false,
+        TextXAlignment = Enum.TextXAlignment.Left,
+    }, panel)
+    addCorner(searchBox, 6)
+    addStroke(searchBox, 0.35, 1)
+    create("UIPadding", {PaddingLeft = UDim.new(0, 9), PaddingRight = UDim.new(0, 7)}, searchBox)
+
+    local rootStatus = makeLabel(panel, "CatalogRootStatus", "WAITING FOR SECTION", UDim2.new(1, -260, 0, 30), UDim2.new(0, 250, 0, 37), 9, true)
+    rootStatus.TextXAlignment = Enum.TextXAlignment.Right
+
+    local namesTitle = makeLabel(panel, "CatalogNamesTitle", "AVAILABLE NAMES", UDim2.new(1, -20, 0, 18), UDim2.fromOffset(10, 75), 9, true)
+    local nameList = create("ScrollingFrame", {
+        Name = "CatalogNameList",
+        Size = UDim2.new(1, -20, 0, 77),
+        Position = UDim2.fromOffset(10, 96),
+        BackgroundColor3 = COLORS.Background,
+        BorderSizePixel = 0,
+        ScrollBarThickness = 3,
+        ScrollBarImageColor3 = COLORS.Gray,
+        ScrollingDirection = Enum.ScrollingDirection.X,
+        AutomaticCanvasSize = Enum.AutomaticSize.X,
+        CanvasSize = UDim2.new(0, 0, 0, 0),
+        ClipsDescendants = true,
+    }, panel)
+    addCorner(nameList, 6)
+    addStroke(nameList, 0.5, 1)
+    create("UIPadding", {
+        PaddingLeft = UDim.new(0, 7), PaddingRight = UDim.new(0, 7),
+        PaddingTop = UDim.new(0, 8), PaddingBottom = UDim.new(0, 6),
+    }, nameList)
+    create("UIListLayout", {
+        FillDirection = Enum.FillDirection.Horizontal,
+        SortOrder = Enum.SortOrder.LayoutOrder,
+        Padding = UDim.new(0, 6),
+    }, nameList)
+
+    local instancesTitle = makeLabel(panel, "CatalogInstancesTitle", "OBJECT INSTANCES / SELECT ONE", UDim2.new(1, -20, 0, 18), UDim2.fromOffset(10, 184), 9, true)
+    local instanceList = create("ScrollingFrame", {
+        Name = "CatalogInstanceList",
+        Size = UDim2.new(1, -20, 0, 88),
+        Position = UDim2.fromOffset(10, 205),
+        BackgroundColor3 = COLORS.Background,
+        BorderSizePixel = 0,
+        ScrollBarThickness = 3,
+        ScrollBarImageColor3 = COLORS.Gray,
+        ScrollingDirection = Enum.ScrollingDirection.X,
+        AutomaticCanvasSize = Enum.AutomaticSize.X,
+        CanvasSize = UDim2.new(0, 0, 0, 0),
+        ClipsDescendants = true,
+    }, panel)
+    addCorner(instanceList, 6)
+    addStroke(instanceList, 0.5, 1)
+    create("UIPadding", {
+        PaddingLeft = UDim.new(0, 7), PaddingRight = UDim.new(0, 7),
+        PaddingTop = UDim.new(0, 8), PaddingBottom = UDim.new(0, 6),
+    }, instanceList)
+    create("UIListLayout", {
+        FillDirection = Enum.FillDirection.Horizontal,
+        SortOrder = Enum.SortOrder.LayoutOrder,
+        Padding = UDim.new(0, 6),
+    }, instanceList)
+
+    local selectedLabel = makeLabel(panel, "CatalogSelectedLabel", "SELECTED: NONE", UDim2.new(1, -20, 0, 42), UDim2.fromOffset(10, 304), 9, true)
+    selectedLabel.TextYAlignment = Enum.TextYAlignment.Top
+    selectedLabel.TextWrapped = true
+
+    local teleportButton = makeButton(panel, "CatalogTeleportButton", "TELEPORT SELECTED", UDim2.fromOffset(150, 32), UDim2.fromOffset(10, 354))
+    local refreshButton = makeButton(panel, "CatalogRefreshButton", "REFRESH SECTION", UDim2.fromOffset(125, 32), UDim2.fromOffset(168, 354))
+    local farmButton = makeButton(panel, "CatalogFarmButton", "AUTO FARM OFF", UDim2.fromOffset(150, 32), UDim2.fromOffset(306, 354))
+    farmButton.Visible = false
+
+    local detailLabel = makeLabel(panel, "CatalogDetailLabel", "CATALOGS LOAD ON DEMAND / SEARCH FILTERS THE CACHED LIST", UDim2.new(1, -20, 0, 70), UDim2.fromOffset(10, 400), 9, true)
+    detailLabel.TextYAlignment = Enum.TextYAlignment.Top
+    detailLabel.TextWrapped = true
+
+    catalogNavBar = nav
+    catalogPanel = panel
+
+    left.Visible = false
+    right.Visible = false
+    panel.Visible = true
+
+    local function clearHorizontalList(container)
+        for _, child in ipairs(container:GetChildren()) do
+            if child:IsA("GuiButton") or child:IsA("TextLabel") then
+                child:Destroy()
+            end
+        end
+    end
+
+    local function safeNameMatch(value, query)
+        return query == "" or string.find(string.lower(tostring(value or "")), query, 1, true) ~= nil
+    end
+
+    local function getRelativePath(root, node)
+        local names = {}
+        local current = node
+        while current and current ~= root do
+            table.insert(names, 1, current.Name)
+            current = current.Parent
+        end
+        return table.concat(names, "/")
+    end
+
+    local function getSectionRoots(definition)
+        local roots = {}
+        local names = definition.Roots or {}
+        for _, rootName in ipairs(names) do
+            local root = workspace:FindFirstChild(rootName)
+            if root and (root:IsA("Folder") or root:IsA("Model")) then
+                table.insert(roots, root)
+            end
+        end
+
+        if #roots == 0 and definition.FallbackRoots then
+            for _, rootName in ipairs(definition.FallbackRoots) do
+                local root = workspace:FindFirstChild(rootName)
+                if root and (root:IsA("Folder") or root:IsA("Model")) then
+                    table.insert(roots, root)
+                end
+            end
+        end
+
+        return roots
+    end
+
+    local function getEntryTransform(entry)
+        local object = entry and entry.Object
+        if not object or not object.Parent or not object:IsDescendantOf(workspace) then
+            return nil
+        end
+        if object:IsA("BasePart") then
+            return object.CFrame
+        elseif object:IsA("Model") then
+            local ok, pivot = pcall(function() return object:GetPivot() end)
+            if ok then return pivot end
+        end
+        return nil
+    end
+
+    local function entryIsAvailable(entry)
+        local object = entry and entry.Object
+        if not object or not object.Parent or not object:IsDescendantOf(workspace) then
+            return false
+        end
+
+        if object:IsA("Model") then
+            local humanoid = object:FindFirstChildOfClass("Humanoid")
+            if not humanoid then
+                humanoid = object:FindFirstChildWhichIsA("Humanoid", true)
+            end
+            if humanoid and humanoid.Health <= 0 then
+                return false
+            end
+        end
+
+        for _, attributeName in ipairs({"Health", "HP", "Durability"}) do
+            local value = object:GetAttribute(attributeName)
+            if typeof(value) == "number" and value <= 0 then
+                return false
+            end
+        end
+
+        return getEntryTransform(entry) ~= nil
+    end
+
+    local function addEntry(byName, seen, name, object, root, path, canTeleport)
+        if not name or name == "" then return end
+        local list = byName[name]
+        if not list then
+            list = {}
+            byName[name] = list
+        end
+
+        local key = object or (root and (name .. "|" .. root:GetFullName()))
+        if key and seen[key] then return end
+        if key then seen[key] = true end
+
+        table.insert(list, {
+            Name = name,
+            Object = object,
+            Root = root,
+            Path = path or (object and object:GetFullName()) or (root and root:GetFullName()) or name,
+            CanTeleport = canTeleport == true,
+        })
+    end
+
+    local function catalogPathMatch(definition, relativePath)
+        if not definition.Catalog then return nil end
+        for _, catalogName in ipairs(definition.Catalog) do
+            if string.find(catalogName, "/", 1, true) then
+                if relativePath == catalogName
+                    or string.sub(relativePath, -#catalogName) == catalogName then
+                    return catalogName
+                end
+            end
+        end
+        return nil
+    end
+
+    local function scanWorkspaceCategory()
+        local byName = {}
+        local seen = {}
+        for _, child in ipairs(workspace:GetChildren()) do
+            local target = nil
+            if child:IsA("Model") or child:IsA("BasePart") then
+                target = child
+            end
+            -- Folders are listed as top-level Workspace entries, but are not
+            -- recursively opened or treated as teleport targets here.
+            addEntry(byName, seen, child.Name, target or child, child,
+                target and target:GetFullName() or child:GetFullName(), target ~= nil)
+        end
+        return {ByName = byName, Roots = {workspace}, RootSummary = "WORKSPACE CHILDREN / DIRECT ONLY"}
+    end
+
+    local function scanDefinition(definition)
+        if definition.Mode == "workspace" then
+            return scanWorkspaceCategory()
+        end
+
+        if definition.Mode == "misc" then
+            return {
+                ByName = {
+                    AprilMachine = {{Name = "AprilMachine", Object = nil, Root = nil,
+                        Path = "STATIC DESTINATION / EXACT APRILMACHINE CFRAME", CanTeleport = true, StaticAprilMachine = true}},
+                },
+                Roots = {},
+                RootSummary = "STATIC DESTINATION READY",
+            }
+        end
+
+        local roots = getSectionRoots(definition)
+        local byName = {}
+        local seen = {}
+        local visited = 0
+        local catalogSet = definition.CatalogSet or {}
+
+        for _, root in ipairs(roots) do
+            local stack = {{Node = root, Label = nil, RelativePath = ""}}
+            while #stack > 0 and visited < maxNodesPerScan do
+                local frame = table.remove(stack)
+                local node = frame.Node
+                local relativePath = frame.RelativePath
+                local inheritedLabel = frame.Label
+                visited += 1
+
+                local ownCatalogName = catalogSet[node.Name] and node.Name or nil
+                local attributeLabel = nil
+                if definition.Mode == "ore" then
+                    for _, attributeName in ipairs({"OreType", "OreName", "ResourceType"}) do
+                        local value = node:GetAttribute(attributeName)
+                        if typeof(value) == "string" and catalogSet[value] then
+                            attributeLabel = value
+                            break
+                        end
+                    end
+                    if not attributeLabel then
+                        for _, child in ipairs(node:GetChildren()) do
+                            if child:IsA("StringValue")
+                                and (child.Name == "OreType" or child.Name == "OreName" or child.Name == "Type")
+                                and catalogSet[child.Value] then
+                                attributeLabel = child.Value
+                                break
+                            end
+                        end
+                    end
+                end
+
+                local pathCatalogName = definition.Mode == "location"
+                    and catalogPathMatch(definition, relativePath) or nil
+                local effectiveLabel = attributeLabel or ownCatalogName or pathCatalogName or inheritedLabel
+                local isModel = node:IsA("Model")
+                local isPart = node:IsA("BasePart")
+                local isFolder = node:IsA("Folder")
+                local isTarget = isModel or isPart
+                local candidateName = nil
+
+                if definition.Catalog then
+                    if definition.Mode == "character" or definition.Mode == "boss" then
+                        if isModel and ownCatalogName then
+                            candidateName = ownCatalogName
+                        end
+                    elseif definition.Mode == "ore" then
+                        if isTarget and effectiveLabel then
+                            candidateName = effectiveLabel
+                        end
+                    elseif definition.Mode == "location" then
+                        if isTarget and effectiveLabel then
+                            candidateName = effectiveLabel
+                        end
+                    else
+                        if isTarget and effectiveLabel then
+                            candidateName = effectiveLabel
+                        end
+                    end
+                else
+                    if node ~= root then
+                        if definition.Mode == "npc" then
+                            if isModel then candidateName = node.Name end
+                        elseif isModel or isPart then
+                            candidateName = node.Name
+                        end
+                    end
+                end
+
+                if candidateName then
+                    addEntry(byName, seen, candidateName, node, root,
+                        node:GetFullName(), true)
+                end
+
+                -- A selected Model is already the exact teleport target; avoid
+                -- listing its internal limbs/parts as separate targets.
+                local stopAtModel = isModel and candidateName ~= nil
+                local shouldDescend = not stopAtModel and not isPart
+                if shouldDescend then
+                    local childLabel = effectiveLabel
+                    for _, child in ipairs(node:GetChildren()) do
+                        local childPath = relativePath == "" and child.Name
+                            or (relativePath .. "/" .. child.Name)
+                        table.insert(stack, {
+                            Node = child,
+                            Label = childLabel,
+                            RelativePath = childPath,
+                        })
+                    end
+                end
+
+                if visited % 350 == 0 then
+                    task.wait()
+                    if browserDestroyed or not gui.Parent then
+                        return {ByName = {}, Roots = roots, RootSummary = "CANCELLED"}
+                    end
+                end
+            end
+        end
+
+        local rootNames = {}
+        for _, root in ipairs(roots) do
+            table.insert(rootNames, root.Name)
+        end
+
+        local summary
+        if #rootNames == 0 then
+            summary = "ROOT MISSING / CHECK EXPECTED FOLDER NAME"
+        else
+            summary = "ROOTS: " .. table.concat(rootNames, ", ") .. " / NODES CHECKED: " .. tostring(visited)
+            if visited >= maxNodesPerScan then
+                summary = summary .. " / SCAN CAPPED"
+            end
+        end
+
+        return {ByName = byName, Roots = roots, RootSummary = summary}
+    end
+
+    local function countAvailable(category, name)
+        local state = categoryCache[category]
+        local list = state and state.ByName and state.ByName[name]
+        local count = 0
+        for _, entry in ipairs(list or {}) do
+            if entryIsAvailable(entry) then count += 1 end
+        end
+        return count
+    end
+
+    local function updateSelectedText()
+        if currentEntry then
+            selectedLabel.Text = "SELECTED: " .. tostring(currentEntry.Name)
+                .. "\n" .. tostring(currentEntry.Path)
+            teleportButton.Active = currentEntry.StaticAprilMachine == true or entryIsAvailable(currentEntry)
+        else
+            selectedLabel.Text = "SELECTED: NONE"
+            teleportButton.Active = false
+        end
+        teleportButton.BackgroundTransparency = teleportButton.Active and 0 or 0.35
+    end
+
+    local function renderInstances()
+        clearHorizontalList(instanceList)
+        local state = categoryCache[currentCategory]
+        local list = state and state.ByName and state.ByName[currentName] or {}
+        local available = {}
+        for _, entry in ipairs(list) do
+            if entryIsAvailable(entry) or entry.StaticAprilMachine then
+                table.insert(available, entry)
+            end
+        end
+
+        instancesTitle.Text = "OBJECT INSTANCES / " .. tostring(#available) .. " AVAILABLE"
+        instancePage = math.max(1, instancePage)
+
+        if #available == 0 then
+            local empty = makeLabel(instanceList, "NoInstances", "NO AVAILABLE INSTANCE", UDim2.fromOffset(220, 45), UDim2.fromOffset(5, 6), 10, true)
+            empty.ZIndex = 3
+            currentEntry = nil
+            updateSelectedText()
+            return
+        end
+
+        local firstIndex = (instancePage - 1) * instancePageLimit + 1
+        local lastIndex = math.min(#available, firstIndex + instancePageLimit - 1)
+        for index = firstIndex, lastIndex do
+            local entry = available[index]
+            local displayPath = entry.Path
+            local buttonWidth = math.clamp(TextService:GetTextSize(displayPath, 9, Enum.Font.Gotham, Vector2.new(210, 30)).X + 28, 120, 220)
+            local button = makeButton(instanceList, "InstanceChoice", "#" .. tostring(index) .. "  " .. displayPath,
+                UDim2.fromOffset(buttonWidth, 54), UDim2.fromOffset(0, 0))
+            button.TextSize = 9
+            button.TextWrapped = true
+            button.TextTruncate = Enum.TextTruncate.AtEnd
+            button.LayoutOrder = index
+            button.Activated:Connect(function()
+                if browserDestroyed then return end
+                currentEntry = entry
+                updateSelectedText()
+                detailLabel.Text = "INSTANCE SELECTED\n" .. tostring(entry.Path)
+            end)
+        end
+
+        if #available > lastIndex then
+            local more = makeButton(instanceList, "MoreInstances", "LOAD MORE INSTANCES",
+                UDim2.fromOffset(150, 54), UDim2.fromOffset(0, 0))
+            more.Activated:Connect(function()
+                instancePage += 1
+                renderInstances()
+            end)
+        end
+
+        if currentEntry and (not currentEntry.StaticAprilMachine) and not entryIsAvailable(currentEntry) then
+            currentEntry = nil
+        end
+        updateSelectedText()
+    end
+
+    local function renderNames()
+        clearHorizontalList(nameList)
+        local state = categoryCache[currentCategory]
+        local definition = sectionByKey[currentCategory]
+        local names = {}
+        local query = string.lower(searchBox.Text or "")
+
+        if definition and definition.Catalog then
+            for _, name in ipairs(definition.Catalog) do
+                if safeNameMatch(name, query) then table.insert(names, name) end
+            end
+        elseif state and state.ByName then
+            for name in pairs(state.ByName) do
+                if safeNameMatch(name, query) then table.insert(names, name) end
+            end
+            table.sort(names, function(a, b) return string.lower(a) < string.lower(b) end)
+        end
+
+        local availableCatalogCount = #names
+        local maxToShow = math.min(availableCatalogCount, namePage * namePageLimit)
+        local firstToShow = 1
+        for index = firstToShow, maxToShow do
+            local name = names[index]
+            local count = countAvailable(currentCategory, name)
+            local text = name .. "  [" .. tostring(count) .. "]"
+            local measured = TextService:GetTextSize(text, 9, Enum.Font.GothamBold, Vector2.new(190, 28)).X
+            local width = math.clamp(measured + 25, 76, 190)
+            local button = makeButton(nameList, "CatalogNameChoice", text,
+                UDim2.fromOffset(width, 42), UDim2.fromOffset(0, 0))
+            button.TextSize = 9
+            button.LayoutOrder = index
+            if name == currentName then
+                button.BackgroundColor3 = Color3.fromRGB(38, 38, 38)
+            end
+            button.Activated:Connect(function()
+                currentName = name
+                currentEntry = nil
+                instancePage = 1
+                local activeFarm = farmStates[currentCategory]
+                if activeFarm and activeFarm.Enabled then
+                    activeFarm.Name = name
+                    activeFarm.Target = nil
+                end
+                detailLabel.Text = "NAME SELECTED: " .. name
+                renderNames()
+                renderInstances()
+            end)
+        end
+
+        if availableCatalogCount > maxToShow then
+            local more = makeButton(nameList, "MoreNames", "LOAD MORE  +" .. tostring(availableCatalogCount - maxToShow),
+                UDim2.fromOffset(150, 42), UDim2.fromOffset(0, 0))
+            more.Activated:Connect(function()
+                namePage += 1
+                renderNames()
+            end)
+        end
+
+        namesTitle.Text = "AVAILABLE NAMES / " .. tostring(availableCatalogCount)
+            .. (definition and definition.Catalog and "  (PREDEFINED)" or "  (LIVE OBJECTS)")
+
+        if availableCatalogCount == 0 then
+            makeLabel(nameList, "NoNames", "NO MATCHING NAMES", UDim2.fromOffset(190, 42), UDim2.fromOffset(0, 0), 10, true)
+        end
+
+        if currentName then
+            renderInstances()
+        else
+            clearHorizontalList(instanceList)
+            instancesTitle.Text = "OBJECT INSTANCES / SELECT A NAME"
+        end
+    end
+
+    scheduleCategoryRefresh = function(category)
+        if browserDestroyed or refreshTimers[category] then return end
+        refreshTimers[category] = true
+        task.delay(refreshDebounce, function()
+            refreshTimers[category] = nil
+            if not browserDestroyed then
+                refreshCategory(category, true)
+            end
+        end)
+    end
+
+    refreshCategory = function(category, force)
+        if browserDestroyed or not gui.Parent then return end
+        if scanning[category] then
+            rescanQueued[category] = true
+            return
+        end
+        if not force and categoryCache[category] then
+            return
+        end
+
+        scanning[category] = true
+        task.spawn(function()
+            local definition = sectionByKey[category]
+            local ok, result = pcall(scanDefinition, definition)
+            if ok and result and not browserDestroyed then
+                categoryCache[category] = result
+                visitedSections[category] = true
+
+                for _, root in ipairs(result.Roots or {}) do
+                    if root ~= workspace then
+                        local key = category .. "|" .. tostring(root)
+                        if not watchedRoots[key] then
+                            watchedRoots[key] = true
+                            connectGlobal(root.DescendantAdded, function(instance)
+                                if instance:IsA("Model") or instance:IsA("BasePart") or instance:IsA("Folder")
+                                    or instance:IsA("Humanoid") then
+                                    if visitedSections[category] then
+                                        scheduleCategoryRefresh(category)
+                                    end
+                                end
+                            end)
+                            connectGlobal(root.DescendantRemoving, function(instance)
+                                if instance:IsA("Model") or instance:IsA("BasePart") or instance:IsA("Folder")
+                                    or instance:IsA("Humanoid") then
+                                    if visitedSections[category] then
+                                        scheduleCategoryRefresh(category)
+                                    end
+                                end
+                            end)
+                        end
+                    end
+                end
+
+                if currentCategory == category then
+                    rootStatus.Text = result.RootSummary
+                    renderNames()
+                    if farmStates[category] and farmStates[category].Enabled then
+                        local farmState = farmStates[category]
+                        if farmState.Target and not entryIsAvailable(farmState.Target) then
+                            farmState.Target = nil
+                        end
+                    end
+                end
+            else
+                if not ok then
+                    warn("[Pilgrammedscript] Catalog scan failed for " .. tostring(category) .. ": " .. tostring(result))
+                end
+            end
+
+            scanning[category] = nil
+            if rescanQueued[category] and not browserDestroyed then
+                rescanQueued[category] = nil
+                refreshCategory(category, true)
+            end
+        end)
+    end
+
+    local function teleportEntry(entry)
+        if not entry then
+            detailLabel.Text = "SELECT AN OBJECT FIRST"
+            return false
+        end
+
+        if entry.StaticAprilMachine then
+            local character = player.Character
+            if not character then
+                detailLabel.Text = "CHARACTER NOT READY"
+                return false
+            end
+            local exactAprilMachineCFrame = CFrame.new(
+                734.885559, 9.5, -310.492462,
+                -0.866007447, 0, 0.500031412,
+                0, 1, 0,
+                -0.500031412, 0, -0.866007447
+            )
+            local ok, err = pcall(function() character:PivotTo(exactAprilMachineCFrame) end)
+            detailLabel.Text = ok and "TELEPORTED TO APRILMACHINE" or ("TELEPORT FAILED: " .. tostring(err))
+            return ok
+        end
+
+        local targetCFrame = getEntryTransform(entry)
+        if not targetCFrame then
+            detailLabel.Text = "TARGET NO LONGER EXISTS / REFRESH THE SECTION"
+            currentEntry = nil
+            updateSelectedText()
+            refreshCategory(currentCategory, true)
+            return false
+        end
+
+        local character = player.Character
+        local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+        if not character or not humanoid or humanoid.Health <= 0 then
+            detailLabel.Text = "CHARACTER NOT READY"
+            return false
+        end
+
+        local destination = targetCFrame * CFrame.new(0, 5, 0)
+        local ok, err = pcall(function() character:PivotTo(destination) end)
+        if ok then
+            detailLabel.Text = "TELEPORTED TO " .. tostring(entry.Name) .. "\n" .. tostring(entry.Path)
+        else
+            detailLabel.Text = "TELEPORT FAILED: " .. tostring(err)
+        end
+        return ok
+    end
+
+    local function stopFarm(category)
+        local state = farmStates[category]
+        if not state then return end
+        state.Enabled = false
+        state.Token += 1
+        state.Target = nil
+        if currentCategory == category then
+            farmButton.Text = "AUTO " .. (category == "Ores" and "ORE" or "BOSS") .. " FARM OFF"
+        end
+    end
+
+    local function getNearestEntry(category, name)
+        local state = categoryCache[category]
+        local list = state and state.ByName and state.ByName[name] or {}
+        local character = player.Character
+        local rootPart = character and character:FindFirstChild("HumanoidRootPart")
+        local origin = rootPart and rootPart.Position or Vector3.zero
+        local best = nil
+        local bestDistance = math.huge
+
+        for _, entry in ipairs(list) do
+            if entryIsAvailable(entry) then
+                local target = getEntryTransform(entry)
+                local distance = target and (target.Position - origin).Magnitude or math.huge
+                if distance < bestDistance then
+                    bestDistance = distance
+                    best = entry
+                end
+            end
+        end
+        return best
+    end
+
+    local function startFarm(category)
+        local state = farmStates[category]
+        if not state then return end
+
+        if not currentName or currentName == "" then
+            detailLabel.Text = "SELECT A " .. (category == "Ores" and "ORE" or "BOSS") .. " NAME FIRST"
+            return
+        end
+
+        state.Enabled = true
+        state.Name = currentName
+        state.Target = nil
+        state.Token += 1
+        local token = state.Token
+        farmButton.Text = "AUTO " .. (category == "Ores" and "ORE" or "BOSS") .. " FARM ON"
+
+        if not categoryCache[category] then
+            refreshCategory(category, true)
+        end
+
+        task.spawn(function()
+            while not browserDestroyed and gui.Parent and state.Enabled and state.Token == token do
+                if not state.Name or state.Name == "" then
+                    state.Target = nil
+                end
+
+                if state.Target and not entryIsAvailable(state.Target) then
+                    state.Target = nil
+                end
+
+                if not state.Target and state.Name then
+                    local nextEntry = getNearestEntry(category, state.Name)
+                    if nextEntry then
+                        state.Target = nextEntry
+                        currentEntry = nextEntry
+                        updateSelectedText()
+                        teleportEntry(nextEntry)
+                    else
+                        detailLabel.Text = "WAITING FOR AVAILABLE " .. string.upper(state.Name)
+                    end
+                end
+
+                task.wait(0.6)
+            end
+        end)
+    end
+
+    local function toggleFarm()
+        local category = currentCategory
+        local state = farmStates[category]
+        if not state then return end
+        if state.Enabled then
+            stopFarm(category)
+        else
+            startFarm(category)
+        end
+    end
+
+    local function openSection(category)
+        currentCategory = category
+        catalogCurrentSection = category
+        local savedFarm = farmStates[category]
+        currentName = savedFarm and savedFarm.Enabled and savedFarm.Name or nil
+        currentEntry = nil
+        namePage = 1
+        instancePage = 1
+        searchBox.Text = ""
+        sectionTitle.Text = string.upper(category)
+        detailLabel.Text = "SELECT A NAME TO VIEW SPAWNED INSTANCES"
+        rootStatus.Text = "SCANNING TARGETED ROOT..."
+        selectedLabel.Text = "SELECTED: NONE"
+        teleportButton.Active = false
+        farmButton.Visible = farmStates[category] ~= nil
+        if farmStates[category] then
+            local farmState = farmStates[category]
+            farmButton.Text = "AUTO " .. (category == "Ores" and "ORE" or "BOSS")
+                .. " FARM " .. (farmState.Enabled and "ON" or "OFF")
+        end
+
+        left.Visible = false
+        right.Visible = false
+        panel.Visible = true
+        for _, child in ipairs(nav:GetChildren()) do
+            if child:IsA("TextButton") then
+                child.BackgroundColor3 = COLORS.Element
+            end
+        end
+
+        local state = categoryCache[category]
+        if state then
+            rootStatus.Text = state.RootSummary
+            renderNames()
+        else
+            clearHorizontalList(nameList)
+            clearHorizontalList(instanceList)
+            namesTitle.Text = "AVAILABLE NAMES / LOADING"
+            instancesTitle.Text = "OBJECT INSTANCES / SELECT A NAME"
+        end
+
+        refreshCategory(category, state == nil)
+    end
+
+    local function openAutomation()
+        catalogCurrentSection = "Automation"
+        currentCategory = "Automation"
+        panel.Visible = false
+        left.Visible = true
+        right.Visible = true
+        for _, child in ipairs(nav:GetChildren()) do
+            if child:IsA("TextButton") then
+                child.BackgroundColor3 = COLORS.Element
+            end
+        end
+    end
+
+    for index, definition in ipairs(definitions) do
+        local width = math.clamp(TextService:GetTextSize(definition.Label, 9, Enum.Font.GothamBold, Vector2.new(130, 24)).X + 20, 68, 130)
+        local button = makeButton(nav, "SectionTab", definition.Label,
+            UDim2.fromOffset(width, 26), UDim2.fromOffset(0, 0))
+        button.LayoutOrder = index
+        button.ZIndex = 31
+        button.TextSize = 9
+        button.Activated:Connect(function()
+            openSection(definition.Key)
+            button.BackgroundColor3 = Color3.fromRGB(42, 42, 42)
+        end)
+    end
+
+    local automationButton = makeButton(nav, "AutomationTab", "AUTOMATION",
+        UDim2.fromOffset(100, 26), UDim2.fromOffset(0, 0))
+    automationButton.LayoutOrder = #definitions + 1
+    automationButton.ZIndex = 31
+    automationButton.TextSize = 9
+    automationButton.Activated:Connect(openAutomation)
+
+    searchBox:GetPropertyChangedSignal("Text"):Connect(function()
+        namePage = 1
+        renderNames()
+    end)
+
+    teleportButton.Activated:Connect(function()
+        teleportEntry(currentEntry)
+    end)
+
+    refreshButton.Activated:Connect(function()
+        rootStatus.Text = "REFRESHING TARGETED ROOT..."
+        refreshCategory(currentCategory, true)
+    end)
+
+    farmButton.Activated:Connect(toggleFarm)
+
+    connectGlobal(workspace.ChildAdded, function(child)
+        if browserDestroyed then return end
+        for category in pairs(visitedSections) do
+            if category == "Workspace" then
+                scheduleCategoryRefresh("Workspace")
+            end
+            local definition = sectionByKey[category]
+            for _, rootName in ipairs(definition.Roots or {}) do
+                if child.Name == rootName then
+                    scheduleCategoryRefresh(category)
+                    break
+                end
+            end
+            for _, rootName in ipairs(definition.FallbackRoots or {}) do
+                if child.Name == rootName then
+                    scheduleCategoryRefresh(category)
+                    break
+                end
+            end
+        end
+    end)
+
+    connectGlobal(workspace.ChildRemoved, function(child)
+        if browserDestroyed then return end
+        for category in pairs(visitedSections) do
+            if category == "Workspace" then
+                scheduleCategoryRefresh("Workspace")
+            end
+            local definition = sectionByKey[category]
+            for _, rootName in ipairs(definition.Roots or {}) do
+                if child.Name == rootName then
+                    scheduleCategoryRefresh(category)
+                    break
+                end
+            end
+            for _, rootName in ipairs(definition.FallbackRoots or {}) do
+                if child.Name == rootName then
+                    scheduleCategoryRefresh(category)
+                    break
+                end
+            end
+        end
+    end)
+
+    connectGlobal(UserInputService.InputBegan, function(input, gameProcessed)
+        if gameProcessed or browserDestroyed then return end
+        if input.KeyCode == Enum.KeyCode.K then
+            gui.Enabled = not gui.Enabled
+        end
+    end)
+
+    gui.Destroying:Connect(function()
+        browserDestroyed = true
+        for category in pairs(farmStates) do
+            stopFarm(category)
+        end
+    end)
+
+    openSection("Workspace")
+end
+
+
 -- Luau allows at most 200 local variables per function. The UI above uses
 -- about 150 of them, so everything below runs inside its own function
 -- (with its own 200 slots). Without this split the script fails to
@@ -1223,8 +2667,7 @@ end
 local npcFolderCache = nil
 local npcFolderCheckedAt = -math.huge
 
--- The NPC folder can sit anywhere in the workspace, so the (slow) deep
--- search is cached and only repeated every few seconds when it is missing.
+-- NPC folder aliases are checked only as direct Workspace children.
 local function findNPCFolder()
     if npcFolderCache and npcFolderCache.Parent then
         return npcFolderCache
@@ -1237,15 +2680,10 @@ local function findNPCFolder()
     npcFolderCheckedAt = os.clock()
     npcFolderCache = nil
 
-    for _, candidateName in ipairs({
-        "NPCs",
-        "NPC",
-        "NonPlayerCharacters",
-    }) do
-        local folder = workspace:FindFirstChild(candidateName)
-
-        if folder and folder:IsA("Folder") then
-            npcFolderCache = folder
+    for _, candidateName in ipairs({"NPCs", "NPC", "NonPlayerCharacters"}) do
+        local candidate = workspace:FindFirstChild(candidateName)
+        if candidate and (candidate:IsA("Folder") or candidate:IsA("Model")) then
+            npcFolderCache = candidate
             break
         end
     end
@@ -1258,10 +2696,12 @@ local function getFolder(name)
         return findNPCFolder()
     end
 
-    local folder = workspace:FindFirstChild(name)
-
-    if folder and folder:IsA("Folder") then
-        return folder
+    local candidates = name == "Mobs" and {"Mobs", "Enemies"} or {name}
+    for _, candidateName in ipairs(candidates) do
+        local folder = workspace:FindFirstChild(candidateName)
+        if folder and (folder:IsA("Folder") or folder:IsA("Model")) then
+            return folder
+        end
     end
 
     return nil
@@ -1406,150 +2846,76 @@ end
 -- Every direct Workspace child is a search root. This includes folders,
 -- top-level models, loose parts, and custom Workspace containers.
 local function getScanRoots()
+    -- The legacy mob/NPC systems only need these two targeted folders.
+    -- Catalog sections have their own lazy, category-specific scanners.
     local roots = {}
-    local seenRoots = {}
+    local seen = {}
 
     local function addRoot(instance, category)
-        if instance and not seenRoots[instance] then
-            seenRoots[instance] = true
+        if instance and not seen[instance] then
+            seen[instance] = true
             table.insert(roots, {
                 Root = instance,
                 Category = category,
-                Fast = category == "Mobs" or category == "NPCs",
+                Fast = false,
             })
         end
     end
 
-    -- Include every direct Workspace child, not only Folder instances.
-    -- Folder contents are recursively scanned; top-level Models and Parts
-    -- are included as individual selectable Workspace entries.
-    for _, child in ipairs(workspace:GetChildren()) do
-        local category = "Workspace"
-        if child:IsA("Folder") then
-            if isNPCFolderName(child.Name) then
-                category = "NPCs"
-            elseif string.lower(child.Name) == "mobs" then
-                category = "Mobs"
-            else
-                category = child.Name
-            end
-        end
-        addRoot(child, category)
-    end
+    addRoot(workspace:FindFirstChild("Mobs"), "Mobs")
+    addRoot(workspace:FindFirstChild("Enemies"), "Mobs")
+    addRoot(findNPCFolder(), "NPCs")
 
     return roots
 end
 
--- Scan a Workspace root recursively. Models are stored as a single selectable
--- object (their descendant parts are not duplicated as separate results).
 local function scanRoot(root, rootCategory)
     local out = {}
     local visited = 0
 
-    local function addModel(model, category)
-        if Players:GetPlayerFromCharacter(model) then
-            return false
-        end
-
-        local childCategory = category
-        if isNPCModel(model) then
-            childCategory = "NPCs"
-        elseif getHumanoid(model) then
-            -- Treat humanoid models outside a specifically named Mobs folder
-            -- as farmable mobs too, so autofarm covers the entire Workspace.
-            childCategory = "Mobs"
-        end
-
-        table.insert(out, {
-            Object = model,
-            Category = childCategory,
-        })
-        return true
-    end
-
-    -- Also index nested Models inside another Model / custom container. Parts
-    -- under a Model are intentionally not listed separately.
-    local function walkNestedModels(container, category)
+    local function walk(container)
         for _, child in ipairs(container:GetChildren()) do
-            visited = visited + 1
-            if visited % 250 == 0 then
+            visited += 1
+            if visited % 300 == 0 then
                 task.wait()
             end
 
             if child:IsA("Model") then
-                if addModel(child, category) and category ~= "Mobs" then
-                    walkNestedModels(child, category)
-                end
-            elseif not child:IsA("BasePart") and #child:GetChildren() > 0 then
-                local childCategory = category
-                if child:IsA("Folder") then
-                    if isNPCFolderName(child.Name) then
-                        childCategory = "NPCs"
-                    elseif string.lower(child.Name) == "mobs" then
-                        childCategory = "Mobs"
-                    elseif string.find(string.lower(child.Name), "chest", 1, true)
-                        or string.find(string.lower(child.Name), "treasure", 1, true) then
-                        childCategory = child.Name
+                if not Players:GetPlayerFromCharacter(child) then
+                    local shouldIndex = true
+                    if rootCategory == "Mobs" then
+                        shouldIndex = child:FindFirstChildWhichIsA("Humanoid", true) ~= nil
+                    elseif rootCategory == "NPCs" then
+                        shouldIndex = child:FindFirstChildWhichIsA("Humanoid", true) ~= nil
+                            or child:GetAttribute("IsNPC") == true
+                            or child:GetAttribute("NPC") == true
+                    end
+
+                    if shouldIndex then
+                        table.insert(out, {
+                            Object = child,
+                            Category = rootCategory,
+                        })
+                    else
+                        walk(child)
                     end
                 end
-                walkNestedModels(child, childCategory)
-            end
-        end
-    end
-
-    local function addPart(part, category)
-        if SETTINGS.IncludeLooseParts then
-            table.insert(out, {
-                Object = part,
-                Category = category,
-            })
-        end
-    end
-
-    local function walk(container, category)
-        for _, child in ipairs(container:GetChildren()) do
-            visited = visited + 1
-            if visited % 250 == 0 then
-                task.wait()
-            end
-
-            if child:IsA("Model") then
-                if addModel(child, category) then
-                    walkNestedModels(child, category)
-                end
-            elseif child:IsA("BasePart") then
-                addPart(child, category)
-            else
-                local childCategory = category
-                if child:IsA("Folder") then
-                    if isNPCFolderName(child.Name) then
-                        childCategory = "NPCs"
-                    elseif string.lower(child.Name) == "mobs" then
-                        childCategory = "Mobs"
-                    elseif string.find(string.lower(child.Name), "chest", 1, true)
-                        or string.find(string.lower(child.Name), "treasure", 1, true) then
-                        childCategory = child.Name
-                    end
-                end
-
-                -- Recurse through folders and other containers (such as
-                -- Tools or custom Workspace containers) without indexing
-                -- every descendant of a Model as a separate target.
-                if #child:GetChildren() > 0 then
-                    walk(child, childCategory)
-                end
+            elseif child:IsA("Folder") or child:IsA("Model") then
+                walk(child)
             end
         end
     end
 
     if root:IsA("Model") then
-        if addModel(root, rootCategory) then
-            walkNestedModels(root, rootCategory)
+        if rootCategory == "Mobs" or rootCategory == "NPCs" then
+            if root:FindFirstChildWhichIsA("Humanoid", true) then
+                table.insert(out, {Object = root, Category = rootCategory})
+            else
+                walk(root)
+            end
         end
-    elseif root:IsA("BasePart") then
-        addPart(root, rootCategory)
     else
-        walk(root, rootCategory)
+        walk(root)
     end
 
     return out
@@ -1569,7 +2935,7 @@ local function refreshModelCache(forceFull)
         for _, info in ipairs(roots) do
             active[info.Root] = true
 
-            if forceFull or info.Fast or rootEntries[info.Root] == nil then
+            if forceFull or rootEntries[info.Root] == nil then
                 rootEntries[info.Root] = scanRoot(info.Root, info.Category)
             end
         end
@@ -1889,53 +3255,76 @@ local function isChestGPrompt(prompt)
     return containsChestWord(context)
 end
 
--- Maintain a lightweight prompt index instead of searching every Model's
--- descendants repeatedly. Existing prompts are indexed once; new prompts are
--- added and removed through Workspace descendant events.
+-- Index prompts only inside the three chest-related roots. Do not traverse
+-- unrelated Workspace descendants.
 local chestPromptCache = setmetatable({}, {__mode = "k"})
+local chestPromptRoots = setmetatable({}, {__mode = "k"})
+local CHEST_ROOT_NAMES = {
+    GoldChests = true,
+    Chests = true,
+    ChestSpawns = true,
+}
 
--- Connect events first so prompts spawned during the initial indexing pass are
--- not missed. The existing Workspace walk is deferred and yields in batches;
--- this prevents a large Pilgrammed map from blocking GUI startup.
-connectGlobal(workspace.DescendantAdded, function(instance)
-    if instance:IsA("ProximityPrompt") then
-        chestPromptCache[instance] = true
+local function indexChestPromptRoot(root)
+    if not root or not root.Parent or chestPromptRoots[root] then
+        return
     end
-end)
 
-connectGlobal(workspace.DescendantRemoving, function(instance)
-    if instance:IsA("ProximityPrompt") then
-        chestPromptCache[instance] = nil
-        chestPromptCooldowns[instance] = nil
-    end
-end)
+    chestPromptRoots[root] = true
+    connectGlobal(root.DescendantAdded, function(instance)
+        if instance:IsA("ProximityPrompt") then
+            chestPromptCache[instance] = true
+        end
+    end)
 
-task.defer(function()
-    local stack = {workspace}
+    connectGlobal(root.DescendantRemoving, function(instance)
+        if instance:IsA("ProximityPrompt") then
+            chestPromptCache[instance] = nil
+            chestPromptCooldowns[instance] = nil
+        end
+    end)
+
+    local stack = {root}
     local visited = 0
 
     while #stack > 0 and not destroyed and gui.Parent do
         local container = table.remove(stack)
-        local children = container:GetChildren()
-
-        for _, child in ipairs(children) do
-            visited = visited + 1
-
+        for _, child in ipairs(container:GetChildren()) do
+            visited += 1
             if child:IsA("ProximityPrompt") then
                 chestPromptCache[child] = true
             end
-
-            -- Traverse all descendants, but yield periodically so this index
-            -- cannot monopolize the client thread in a large Workspace.
             if #child:GetChildren() > 0 then
                 table.insert(stack, child)
             end
-
             if visited % 300 == 0 then
                 task.wait()
-                if destroyed or not gui.Parent then
-                    return
-                end
+            end
+        end
+    end
+
+end
+
+for rootName in pairs(CHEST_ROOT_NAMES) do
+    local root = workspace:FindFirstChild(rootName)
+    if root and (root:IsA("Folder") or root:IsA("Model")) then
+        task.spawn(indexChestPromptRoot, root)
+    end
+end
+
+connectGlobal(workspace.ChildAdded, function(child)
+    if CHEST_ROOT_NAMES[child.Name]
+        and (child:IsA("Folder") or child:IsA("Model")) then
+        task.spawn(indexChestPromptRoot, child)
+    end
+end)
+
+connectGlobal(workspace.ChildRemoved, function(child)
+    if CHEST_ROOT_NAMES[child.Name] then
+        for prompt in pairs(chestPromptCache) do
+            if not prompt.Parent or prompt:IsDescendantOf(child) then
+                chestPromptCache[prompt] = nil
+                chestPromptCooldowns[prompt] = nil
             end
         end
     end
@@ -3318,33 +4707,10 @@ local function searchModels()
 end
 
 ------------------------------------------------------------------------
--- LIVE WORKSPACE SPAWN DETECTION
-------------------------------------------------------------------------
-
--- The periodic scan remains as a fallback, but newly-added Models, Parts, and
--- Folders invalidate only their direct Workspace root and trigger a quick
--- cache refresh. This catches fresh mobs and other models without repeatedly
--- rescanning every Workspace container.
-local pendingWorkspaceRoots = {}
-local workspaceRefreshQueued = false
-local WORKSPACE_SPAWN_SCAN_DEBOUNCE = 0.18
-
-local function getDirectWorkspaceRoot(instance)
-    if not instance or instance == workspace then
-        return nil
-    end
-
-    local root = instance
-    while root and root.Parent and root.Parent ~= workspace do
-        root = root.Parent
-    end
-
-    if root and root.Parent == workspace then
-        return root
-    end
-
-    return nil
-end
+-- LIVE TARGETED SPAWN DETECTION
+-- Watch only the Mobs and NPCs folders used by the legacy automation.
+local modelRootWatchers = setmetatable({}, {__mode = "k"})
+local modelRootRefreshQueued = setmetatable({}, {__mode = "k"})
 
 local function refreshAfterWorkspaceChange()
     if destroyed or not gui.Parent then
@@ -3362,65 +4728,87 @@ local function refreshAfterWorkspaceChange()
     end
 end
 
-local function scheduleWorkspaceRefresh()
-    if workspaceRefreshQueued or destroyed then
+local function queueModelRootRefresh(root)
+    if not root or modelRootRefreshQueued[root] or destroyed then
         return
     end
 
-    workspaceRefreshQueued = true
+    modelRootRefreshQueued[root] = true
+    task.delay(0.18, function()
+        if destroyed or not gui.Parent then
+            modelRootRefreshQueued[root] = nil
+            return
+        end
 
-    task.delay(WORKSPACE_SPAWN_SCAN_DEBOUNCE, function()
-        task.spawn(function()
-            -- Do not invalidate a root while another cache build is reading it.
-            while scanBusy and gui.Parent and not destroyed do
-                task.wait(0.03)
-            end
-
-            if destroyed or not gui.Parent then
-                workspaceRefreshQueued = false
-                table.clear(pendingWorkspaceRoots)
-                return
-            end
-
-            for root in pairs(pendingWorkspaceRoots) do
-                rootEntries[root] = nil
-            end
-            table.clear(pendingWorkspaceRoots)
-
-            -- Allow new events during this scan to queue another pass.
-            workspaceRefreshQueued = false
-            refreshModelCache(false)
-            refreshAfterWorkspaceChange()
-
-            if next(pendingWorkspaceRoots) ~= nil then
-                scheduleWorkspaceRefresh()
-            end
-        end)
+        modelRootRefreshQueued[root] = nil
+        if root.Parent == workspace then
+            rootEntries[root] = nil
+        end
+        refreshModelCache(false)
+        refreshAfterWorkspaceChange()
     end)
 end
 
-local function queueWorkspaceRootRefresh(instance)
-    -- Highlights, attachments, scripts, and other non-target descendants do
-    -- not need a full root rescan. Models, Parts, and Folders can change the
-    -- selectable / farmable model index.
-    if not instance:IsA("Model")
-        and not instance:IsA("BasePart")
-        and not instance:IsA("Folder")
-        and not instance:IsA("ProximityPrompt") then
+local function watchModelRoot(root)
+    if not root or modelRootWatchers[root] then
         return
     end
 
-    local root = getDirectWorkspaceRoot(instance)
-    if not root then
-        return
-    end
-
-    pendingWorkspaceRoots[root] = true
-    scheduleWorkspaceRefresh()
+    modelRootWatchers[root] = true
+    connectGlobal(root.DescendantAdded, function(instance)
+        if instance:IsA("Model") or instance:IsA("Humanoid") then
+            queueModelRootRefresh(root)
+        end
+    end)
+    connectGlobal(root.DescendantRemoving, function(instance)
+        if instance:IsA("Model") or instance:IsA("Humanoid") then
+            queueModelRootRefresh(root)
+        end
+    end)
 end
 
-connectGlobal(workspace.DescendantAdded, queueWorkspaceRootRefresh)
-connectGlobal(workspace.DescendantRemoving, queueWorkspaceRootRefresh)
+for _, info in ipairs(getScanRoots()) do
+    watchModelRoot(info.Root)
+end
+
+local MODEL_ROOT_NAMES = {
+    Mobs = true,
+    Enemies = true,
+    NPCs = true,
+    NPC = true,
+    NonPlayerCharacters = true,
+}
+
+connectGlobal(workspace.ChildAdded, function(child)
+    if not MODEL_ROOT_NAMES[child.Name] then
+        return
+    end
+
+    if child.Name == "NPCs" or child.Name == "NPC" or child.Name == "NonPlayerCharacters" then
+        npcFolderCache = child
+    end
+
+    watchModelRoot(child)
+    task.defer(function()
+        refreshModelCache(true)
+        refreshAfterWorkspaceChange()
+    end)
+end)
+
+connectGlobal(workspace.ChildRemoved, function(child)
+    if not MODEL_ROOT_NAMES[child.Name] then
+        return
+    end
+
+    rootEntries[child] = nil
+    if npcFolderCache == child then
+        npcFolderCache = nil
+        npcFolderCheckedAt = -math.huge
+    end
+
+    refreshModelCache(false)
+    refreshAfterWorkspaceChange()
+end)
 
 ------------------------------------------------------------------------
 -- TELEPORT
@@ -4278,7 +5666,7 @@ task.spawn(function()
     local lastFullScan = -math.huge
 
     while gui.Parent and not destroyed do
-        local fullScan = os.clock() - lastFullScan >= SETTINGS.FullScanRate
+        local fullScan = os.clock() - lastFullScan >= math.max(SETTINGS.FullScanRate, 15)
         if fullScan then
             lastFullScan = os.clock()
         end
@@ -4351,6 +5739,11 @@ task.spawn(function()
 end)
 
 end -- end of startLogic()
+
+local browserOk, browserErr = pcall(startCatalogBrowser)
+if not browserOk then
+    warn("[Pilgrammedscript] Catalog browser startup failed: " .. tostring(browserErr))
+end
 
 local ok, err = pcall(startLogic)
 if ok then
