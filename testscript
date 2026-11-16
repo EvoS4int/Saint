@@ -1196,6 +1196,17 @@ local feedbackLabel = makeLabel(
 feedbackLabel.TextXAlignment = Enum.TextXAlignment.Center
 
 ------------------------------------------------------------------------
+-- LOGIC
+--
+-- Luau allows at most 200 local variables per function. The UI above uses
+-- about 150 of them, so everything below runs inside its own function
+-- (with its own 200 slots). Without this split the script fails to
+-- compile and the UI never appears.
+------------------------------------------------------------------------
+
+local function startLogic()
+
+------------------------------------------------------------------------
 -- FOLDER / MODEL DISCOVERY
 ------------------------------------------------------------------------
 
@@ -4339,4 +4350,12 @@ task.spawn(function()
     end
 end)
 
-print("[Pilgrammedscript] Loaded successfully.")
+end -- end of startLogic()
+
+local ok, err = pcall(startLogic)
+if ok then
+    print("[Pilgrammedscript] Loaded successfully.")
+else
+    warn("[Pilgrammedscript] Startup error: " .. tostring(err))
+    feedbackLabel.Text = "STARTUP ERROR - CHECK OUTPUT"
+end
