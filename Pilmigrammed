@@ -24,26 +24,56 @@ if not playerGui then
     return
 end
 
--- Prefer the executor's dedicated UI container when one is available.
--- Fall back to PlayerGui so the same file still works as a normal LocalScript.
+-- Use PlayerGui as the primary parent. It is the standard render container
+-- for ScreenGui and avoids hidden executor containers that may accept an
+-- Instance but not display it.
 local guiParent = playerGui
-local executorGuiGetter = nil
-if type(gethui) == "function" then
-    executorGuiGetter = gethui
-elseif type(get_hidden_gui) == "function" then
-    executorGuiGetter = get_hidden_gui
+print("[Pilgrammedscript] PlayerGui found; using it as the ScreenGui parent.")
+
+-- This small status panel remains visible if the large interface fails while
+-- it is being built. It is removed after a successful startup.
+local startupDiagnostics = {}
+do
+    local oldDiagnostic = playerGui:FindFirstChild("Pilgrammedscript_StartupDiagnostic")
+    if oldDiagnostic then
+        oldDiagnostic:Destroy()
+    end
+
+    local diagnosticGui = Instance.new("ScreenGui")
+    diagnosticGui.Name = "Pilgrammedscript_StartupDiagnostic"
+    diagnosticGui.ResetOnSpawn = false
+    diagnosticGui.IgnoreGuiInset = true
+    diagnosticGui.DisplayOrder = 1000001
+
+    local diagnosticLabel = Instance.new("TextLabel")
+    diagnosticLabel.Name = "Status"
+    diagnosticLabel.AnchorPoint = Vector2.new(0.5, 0)
+    diagnosticLabel.Position = UDim2.new(0.5, 0, 0, 12)
+    diagnosticLabel.Size = UDim2.fromOffset(430, 34)
+    diagnosticLabel.BackgroundColor3 = Color3.fromRGB(12, 12, 12)
+    diagnosticLabel.BackgroundTransparency = 0.08
+    diagnosticLabel.BorderSizePixel = 0
+    diagnosticLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+    diagnosticLabel.TextSize = 13
+    diagnosticLabel.Font = Enum.Font.GothamSemibold
+    diagnosticLabel.Text = "PILGRAMMED: initializing..."
+    diagnosticLabel.ZIndex = 100
+    diagnosticLabel.Parent = diagnosticGui
+
+    local diagnosticCorner = Instance.new("UICorner")
+    diagnosticCorner.CornerRadius = UDim.new(0, 7)
+    diagnosticCorner.Parent = diagnosticLabel
+
+    diagnosticGui.Parent = playerGui
+    startupDiagnostics.Gui = diagnosticGui
+    startupDiagnostics.Label = diagnosticLabel
 end
 
-if executorGuiGetter then
-    local ok, hiddenGui = pcall(executorGuiGetter)
-    if ok and typeof(hiddenGui) == "Instance" then
-        guiParent = hiddenGui
-        print("[Pilgrammedscript] Executor UI container detected.")
-    else
-        warn("[Pilgrammedscript] Executor UI container lookup failed; using PlayerGui.")
+local function setStartupStatus(message)
+    local label = startupDiagnostics.Label
+    if label and label.Parent then
+        label.Text = "PILGRAMMED: " .. tostring(message)
     end
-else
-    print("[Pilgrammedscript] No executor UI-container API detected; using PlayerGui.")
 end
 
 local SETTINGS = {
@@ -1362,6 +1392,8 @@ local function makePanel(parent, name, size, position)
     return panel
 end
 
+setStartupStatus("creating main interface")
+
 local gui = create("ScreenGui", {
     Name = GUI_NAME,
     ResetOnSpawn = false,
@@ -1371,6 +1403,7 @@ local gui = create("ScreenGui", {
     ZIndexBehavior = Enum.ZIndexBehavior.Global,
 }, guiParent)
 print("[Pilgrammedscript] ScreenGui created. Parent: " .. (guiParent == playerGui and "PlayerGui" or "executor UI container"))
+setStartupStatus("main interface created; building controls")
 
 local main = create("Frame", {
     Name = "Main",
@@ -7538,6 +7571,7 @@ end -- end of startLogic()
 -- Keep startup result variables scoped so they do not consume permanent
 -- top-level local slots in this large integrated script.
 do
+    setStartupStatus("starting catalog browser")
     print("[Pilgrammedscript] Starting catalog browser...")
     local browserResult = {pcall(startCatalogBrowser)}
     if not browserResult[1] then
@@ -7548,12 +7582,17 @@ do
 end
 
 do
+    setStartupStatus("starting main interface logic")
     print("[Pilgrammedscript] Starting main interface logic...")
     local logicResult = {pcall(startLogic)}
     if logicResult[1] then
         print("[Pilgrammedscript] Loaded successfully.")
+        if startupDiagnostics.Gui and startupDiagnostics.Gui.Parent then
+            startupDiagnostics.Gui:Destroy()
+        end
     else
         warn("[Pilgrammedscript] Startup error: " .. tostring(logicResult[2]))
+        setStartupStatus("startup error - check executor console")
         if feedbackLabel and feedbackLabel.Parent then
             feedbackLabel.Text = "STARTUP ERROR - CHECK EXECUTOR CONSOLE"
         end
